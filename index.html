@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#111">
+<link rel="manifest" href="manifest.json">
+<title>Echo Deck</title>
+<style>
+  :root { --bg: #fff; --fg: #111; --mute: #777; --line: #e3e3e3; --card: #f6f6f6; --acc: #2a6df4; --bad: #d33; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --mute: #999; --line: #2a2a2a; --card: #1c1c1c; --acc: #5b8dff; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.4 -apple-system, system-ui, sans-serif; padding: env(safe-area-inset-top) 16px calc(80px + env(safe-area-inset-bottom)); }
+  h1 { font-size: 26px; margin: 16px 0 12px; }
+  button, input, select { font: inherit; color: inherit; }
+  button { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
+  button.primary { background: var(--acc); color: #fff; border: 0; width: 100%; padding: 14px; font-weight: 600; }
+  button.danger { color: var(--bad); }
+  button.back { border: 0; background: none; padding: 8px 0; color: var(--acc); }
+  input { width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); margin: 4px 0; }
+  input[type=checkbox] { width: auto; }
+  label { display: block; margin: 8px 0; }
+  form, details { margin: 12px 0; }
+  summary { padding: 8px 0; color: var(--acc); }
+  .row { display: flex; justify-content: space-between; align-items: center; width: 100%; margin: 6px 0; text-align: left; padding: 14px; }
+  .row span, small, .hint { color: var(--mute); font-size: 14px; }
+  ul.cards { list-style: none; padding: 0; }
+  ul.cards li { display: flex; gap: 8px; align-items: center; border-bottom: 1px solid var(--line); padding: 8px 0; }
+  ul.cards li div { flex: 1; } ul.cards small { display: block; }
+  ul.cards li button { padding: 4px 10px; }
+  .card { background: var(--card); border-radius: 16px; padding: 28px 20px; margin: 12px 0; min-height: 260px; text-align: center; position: relative; overflow: hidden; }
+  .front { font-size: 22px; }
+  .target { font-size: 26px; font-weight: 600; margin-top: 24px; border-top: 1px solid var(--line); padding-top: 24px; }
+  .bar { position: absolute; left: 0; bottom: 0; height: 4px; width: 0; background: var(--acc); }
+  @keyframes shrink { from { width: 100%; } to { width: 0; } }
+  .timeup { color: var(--bad); font-weight: 600; }
+  .grades { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .grades button { padding: 12px 4px; } .grades small { display: block; }
+  nav { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: var(--bg); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+  nav button { flex: 1; border: 0; background: none; border-radius: 0; padding: 14px; color: var(--mute); }
+  nav button.on { color: var(--acc); font-weight: 600; }
+  #toast { position: fixed; left: 16px; right: 16px; bottom: calc(70px + env(safe-area-inset-bottom)); background: var(--fg); color: var(--bg); padding: 12px; border-radius: 10px; display: none; }
+  audio { width: 100%; margin: 8px 0; }
+</style>
+</head>
+<body>
+<main id="view"></main>
+<div id="toast"></div>
+<nav>
+  <button data-tab="decks">Decks</button>
+  <button data-tab="shadow">Shadow</button>
+  <button data-tab="settings">Settings</button>
+</nav>
+<script type="module" src="app.js"></script>
+</body>
+</html>

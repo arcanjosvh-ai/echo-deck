@@ -149,19 +149,32 @@ export function renderCard(tmpl, fields, { ord = 0, back = false, front = '' } =
   });
 }
 
+// The field Echo's audio speaks for a card type: the one Anki's own {{tts …:Field}} reads, else the cloze field,
+// else the first field the answer shows that the question doesn't (the answer itself, ahead of any notes).
+// undefined = no such field, so the whole answer side.
+export function speakField(tm, names) {
+  const named = tm.a.match(/{{\s*tts\b[^}]*:([^}:]+?)\s*}}/)?.[1] ?? tm.q.match(/{{\s*cloze:([^}]+?)\s*}}/)?.[1];
+  if (named) return named.trim();
+  const refs = s => [...s.matchAll(/{{([^}]+)}}/g)].map(m => m[1].trim()).filter(t => !/^([#^/]|type:|tts\b)/.test(t))
+    .map(t => t.split(':').pop().trim()).filter(f => names.includes(f));
+  const asked = new Set(refs(tm.q));
+  return refs(tm.a).find(f => !asked.has(f));
+}
+
 // One Echo card per Anki card, laid out by its note type's templates like Anki's reviewer.
-// kind = "Note type: Card type"; say = what Echo's audio should speak: the field Anki's own {{tts …:Field}}
-// reads, else the answer side without the front. sound = an existing [sound:file] to use instead.
-export function ankiCards({ types, notes, cards }) {
+// kind = "Note type: Card type"; field = the field its audio speaks (speakField, or speak[kind] to override;
+// '' = whole answer side); say = that text. sound = an existing [sound:file] to use instead.
+export function ankiCards({ types, notes, cards }, speak = {}) {
   const soundIn = h => h.match(/\[sound:([^\]]+)\]/)?.[1], unsound = h => h.replace(/\[sound:[^\]]*\]/g, '');
+  const uncloze = h => h.replace(/{{c\d+::([\s\S]*?)(?:::[\s\S]*?)?}}/g, '$1');
   return cards.flatMap(({ nid, ord }) => {
     const n = notes[nid], t = n && types[n.mid], tm = t && (t.tmpls[ord] ?? t.tmpls[0]); // cloze types have one template
     if (!tm) return [];
+    const kind = `${t.name}: ${tm.name}`, field = speak[kind] ?? speakField(tm, t.fields);
     const q = renderCard(tm.q, n.fields, { ord }), answer = renderCard(tm.a, n.fields, { ord, back: true });
-    const ttsField = tm.a.match(/{{\s*tts\b[^}]*:([^}:]+?)\s*}}/)?.[1];
     return [{
-      kind: `${t.name}: ${tm.name}`, nt: n.mid, q: unsound(q), a: unsound(renderCard(tm.a, n.fields, { ord, back: true, front: q })),
-      say: unsound(ttsField ? n.fields[ttsField] ?? '' : answer), sound: soundIn(answer) ?? soundIn(q),
+      kind, nt: n.mid, field, q: unsound(q), a: unsound(renderCard(tm.a, n.fields, { ord, back: true, front: q })),
+      say: unsound(field ? uncloze(n.fields[field] ?? '') : answer), sound: soundIn(answer) ?? soundIn(q),
     }];
   });
 }

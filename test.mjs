@@ -56,6 +56,12 @@ for (const kind of ['latest', 'legacy']) {
   const [c1, c2] = cs.filter(c => c.kind.startsWith('Cloze'));
   assert(c1.q.includes('<span class="cloze">[...]</span>, mundo') && c1.a.includes('<span class="cloze">Hola</span>'), kind);
   assert(c2.q.includes('Hola, <span class="cloze">[world]</span>'), kind);
+  // Spoken text: the deck's tts field, else the answer-only field, cloze text without its markup; overridable.
+  assert.equal(cs.find(c => c.kind === 'Basic: Card 1').say, 'Thank you', kind);
+  assert.equal(c1.field, 'Text');
+  assert.equal(c1.say, 'Hola, mundo', kind);
+  assert.equal(ankiCards(pkg, { 'Sentence: Speak': 'English' }).find(c => c.kind === 'Sentence: Speak').say, 'Where is the station?');
+  assert.equal(ankiCards(pkg, { 'Basic: Card 1': '' }).find(c => c.kind === 'Basic: Card 1').say.trim(), '<hr id=answer>\n\nThank you'); // whole answer, minus the front
   assert.equal((await pkg.audio('donde.m4a')).length, 11902, kind);
   assert.equal(pkg.audio('missing.mp3'), undefined);
 }

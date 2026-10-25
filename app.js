@@ -255,23 +255,31 @@ async function importView(file) {
   const pkg = await readApkg(new Uint8Array(await file.arrayBuffer()), await ankiLibs()), all = ankiCards(pkg);
   if (!all.length) throw Error('That deck has no cards');
   toast(`Found ${all.length} cards`);
-  const kinds = {};
-  for (const c of all) kinds[c.kind] = (kinds[c.kind] ?? 0) + 1;
+  const kinds = {}; // kind -> { n cards, its first card }
+  for (const c of all) (kinds[c.kind] ??= { n: 0, c }).n++;
   const many = Object.keys(kinds).length > 1;
+  // What audio reads, per card type: preset to the deck's tts field or the answer-only field (speakField).
+  const sample = (nt, f) => plain(Object.values(pkg.notes).find(n => n.mid === nt && plain(n.fields[f]))?.fields[f]).slice(0, 40);
+  const speakSelect = (k, { c }) => `<label>Audio reads${many ? ` (${esc(k)})` : ''} <select data-kind="${esc(k)}">
+    ${pkg.types[c.nt].fields.map(f => `<option value="${esc(f)}" ${f === c.field ? 'selected' : ''}>${esc(f)}: ${esc(sample(c.nt, f))}</option>`).join('')}
+    <option value="" ${c.field ? '' : 'selected'}>The whole answer side</option></select></label>`;
   render(`<button class="back">‹ Decks</button>
     <h1>Import ${all.length} cards</h1>
     <form id="imp">
       <label>Deck name <input name="name" value="${esc(file.name.replace(/\.apkg$/i, ''))}" required></label>
-      ${many ? `<p>Card types to import:</p>${Object.entries(kinds).map(([k, n]) =>
-        `<label><input type="checkbox" name="kind" value="${esc(k)}" checked> ${esc(k)} (${n})</label>`).join('')}` : ''}
-      <p class="hint">Cards keep their Anki layout and colours, and start as new: Anki review history isn't imported.</p>
+      ${many ? '<p>Card types to import:</p>' : ''}
+      ${Object.entries(kinds).map(([k, v]) => (many ? `<label><input type="checkbox" name="kind" value="${esc(k)}" checked> ${esc(k)} (${v.n})</label>` : '')
+        + speakSelect(k, v)).join('')}
+      <p class="hint">Generated audio reads only the "Audio reads" field, and plays when the answer shows.
+        Cards keep their Anki layout and colours, and start as new: Anki review history isn't imported.</p>
       <button class="primary">Import</button>
     </form>`, 'decks');
   on('.back', 'onclick', decksView);
   on('#imp', 'onsubmit', async e => {
     e.preventDefault();
     const f = e.target, keep = new Set(new FormData(f).getAll('kind'));
-    const picked = all.filter(c => !many || keep.has(c.kind));
+    const speak = Object.fromEntries([...f.querySelectorAll('select[data-kind]')].map(s => [s.dataset.kind, s.value]));
+    const picked = ankiCards(pkg, speak).filter(c => !many || keep.has(c.kind));
     if (!picked.length) throw Error('Pick at least one card type');
     const d = { id: crypto.randomUUID(), name: f.name.value.trim(), ...DECK, css: {} };
     const added = picked.map(c => {

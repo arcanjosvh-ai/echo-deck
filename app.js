@@ -13,8 +13,11 @@ const idb = async (store, op, ...args) => {
   return new Promise((res, rej) => { const q = tx.objectStore(store)[op](...args); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
 };
 
+// Supabase project (the anon key is public by design; access is enforced by the `api` edge function).
+const SB = 'https://kcjopdfvhnxxxjdfvhys.supabase.co', ANON = 'sb_publishable_F3lo2ucp97M7Mu5pUzVWqA_ashimwPg'; // Lingo Land
+
 const DEFAULTS = {
-  target: 'Spanish', native: 'English', langCode: 'es', claudeKey: '', elevenKey: '', voiceId: '',
+  target: 'Spanish', native: 'English', langCode: 'es', voiceId: 'JBFqnCBsd6RMkjVDRZzb',
   gradStreak: 3, gradIvl: 21, newPerDay: 20, minGap: 1.5, silenceRatio: 0.2,
 };
 const DECK = { auto: false, frontSec: 8, backSec: 10 };
@@ -22,7 +25,9 @@ let S = await idb('kv', 'get', 'state') || {
   decks: [{ id: 'global', name: 'Global', ...DECK }, { id: 'live', name: 'Live', ...DECK }], cards: [], settings: {},
 };
 S.settings = { ...DEFAULTS, ...S.settings };
+delete S.settings.claudeKey; delete S.settings.elevenKey; // keys from the pre-proxy version
 const save = () => idb('kv', 'put', S, 'state');
+let session = await idb('kv', 'get', 'session'); // kept apart from S so backups never contain it
 navigator.storage?.persist?.();
 navigator.serviceWorker?.register('sw.js');
 
@@ -46,55 +51,46 @@ function render(html, tab) {
 }
 const on = (sel, ev, fn) => document.querySelectorAll(sel).forEach(el => el[ev] = run(fn));
 
-// ---------- APIs ----------
-const CARDS_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['cards'],
-  properties: { cards: { type: 'array', items: {
-    type: 'object', additionalProperties: false, required: ['target', 'native'],
-    properties: { target: { type: 'string' }, native: { type: 'string' } },
-  } } },
-};
-async function claudeCards(prompt) {
-  if (!S.settings.claudeKey) throw Error('Add your Claude API key in Settings');
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json', 'x-api-key': S.settings.claudeKey, 'anthropic-version': '2026-10-21',
-      'anthropic-beta': 'server-side-fallback-2026-07-01', 'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: 'claude-opus-5-5', max_tokens: 16000, fallbacks: 'default',
-      output_config: { effort: 'low', format: { type: 'json_schema', schema: CARDS_SCHEMA } },
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
-  const j = await r.json();
-  if (!r.ok) throw Error(`Claude: ${j.error?.message || r.status}`);
-  if (j.stop_reason === 'refusal') throw Error('Claude declined this request');
-  return JSON.parse(j.content.findLast(b => b.type === 'text').text).cards;
+// ---------- account (Supabase email code sign-in; a code, not a link, so it works inside the home-screen app) ----------
+async function auth(path, body) {
+  const r = await fetch(`${SB}/auth/v1/${path}`, { method: 'POST', headers: { apikey: ANON, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw Error(j.msg || j.error_description || j.message || `Sign-in failed (${r.status})`);
+  return j;
+}
+async function setSession(j) {
+  session = j && { access_token: j.access_token, refresh_token: j.refresh_token, email: j.user?.email ?? session?.email, expires: Date.now() + j.expires_in * 1000 };
+  await idb('kv', 'put', session, 'session');
+}
+async function token() {
+  if (!session) throw Error('Sign in under Settings first');
+  if (session.expires < Date.now() + 60e3) await setSession(await auth('token?grant_type=refresh_token', { refresh_token: session.refresh_token }));
+  return session.access_token;
 }
 
-async function tts(text) {
-  const { elevenKey, voiceId } = S.settings;
-  const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`, {
-    method: 'POST', headers: { 'xi-api-key': elevenKey, 'content-type': 'application/json' },
-    body: JSON.stringify({ text, model_id: 'eleven_multilingual_v2' }),
+// ---------- APIs, all through the `api` edge function ----------
+async function api(task, body) {
+  const form = body instanceof FormData;
+  const r = await fetch(`${SB}/functions/v1/api?task=${task}`, {
+    method: 'POST', body: form ? body : JSON.stringify(body),
+    headers: { authorization: `Bearer ${await token()}`, apikey: ANON, ...(form ? {} : { 'content-type': 'application/json' }) },
   });
-  if (!r.ok) throw Error(`ElevenLabs TTS ${r.status}: ${await r.text()}`);
-  return r.blob();
+  if (!r.ok) throw Error((await r.json().catch(() => ({}))).error || `Server error ${r.status}`);
+  return r;
 }
+// task: generate {n, topic, existing} | translate {text} | shadow {hard, mine}
+const cards = async (task, params) =>
+  (await (await api(task, { ...params, target: S.settings.target, native: S.settings.native })).json()).cards;
+const tts = async text => (await api('tts', { text, voiceId: S.settings.voiceId || DEFAULTS.voiceId })).blob();
 
 // Scribe speech-to-text with word timestamps. Pass a blob/file, or a public audio URL.
 async function transcribe({ blob, url }) {
-  if (!S.settings.elevenKey) throw Error('Add your ElevenLabs key in Settings');
   const f = new FormData();
   f.append('model_id', 'scribe_v2');
   f.append('timestamps_granularity', 'word');
   if (S.settings.langCode) f.append('language_code', S.settings.langCode);
   blob ? f.append('file', blob, blob.name || 'audio') : f.append('source_url', url);
-  const r = await fetch('https://api.elevenlabs.io/v1/speech-to-text', { method: 'POST', headers: { 'xi-api-key': S.settings.elevenKey }, body: f });
-  if (!r.ok) throw Error(`ElevenLabs STT ${r.status}: ${await r.text()}`);
-  return (await r.json()).words || [];
+  return (await (await api('stt', f)).json()).words || [];
 }
 
 // ---------- cards ----------
@@ -110,7 +106,6 @@ async function addCards(deckId, list) {
 async function fillAudio(cards) {
   cards = cards.filter(c => !c.audio);
   if (!cards.length) return;
-  if (!S.settings.elevenKey || !S.settings.voiceId) return toast('Add ElevenLabs key + voice ID in Settings to generate audio', 5000);
   for (const [i, c] of cards.entries()) {
     toast(`Generating audio ${i + 1}/${cards.length}…`, 60000);
     await idb('audio', 'put', await tts(c.back), c.id);
@@ -118,17 +113,6 @@ async function fillAudio(cards) {
     await save();
   }
   toast('Audio ready ✓');
-}
-
-function sentencePrompt(n, topic) {
-  const s = S.settings;
-  return `You are building a spoken ${s.target} production flashcard deck for a ${s.native} speaker who learns to speak through sentences and spaced repetition, not grammar study.
-Write ${n} new ${s.target} sentences${topic ? ` on the topic: ${topic}` : ''}.
-- Build them from the most frequent ~1500 words of spoken ${s.target} (corpus frequency), favouring the most common first.
-- 4-12 words each, natural everyday speech a native would actually say. Vary tense, person, questions and negation without naming grammar.
-- "native" is a natural ${s.native} translation (the card prompt); "target" is the ${s.target} sentence.
-- Don't repeat any of these existing sentences:
-${S.cards.map(c => c.back).join('\n')}`;
 }
 
 // ---------- views ----------
@@ -187,7 +171,7 @@ function deckView(id) {
   on('#gen', 'onsubmit', async e => {
     e.preventDefault();
     toast('Asking Claude…', 60000);
-    const added = await addCards(id, await claudeCards(sentencePrompt(+e.target.n.value, e.target.topic.value.trim())));
+    const added = await addCards(id, await cards('generate', { n: +e.target.n.value, topic: e.target.topic.value.trim(), existing: S.cards.map(c => c.back) }));
     toast(`Added ${added.length} cards`);
     deckView(id);
     await fillAudio(added);
@@ -196,7 +180,7 @@ function deckView(id) {
   on('#add', 'onsubmit', async e => {
     e.preventDefault();
     let native = e.target.front.value.trim(), target = e.target.back.value.trim();
-    if (!target) [{ native, target }] = await claudeCards(`Translate into natural spoken ${s.target}, as one card. ${s.native}: ${native}`);
+    if (!target) [{ native, target }] = await cards('translate', { text: native });
     const added = await addCards(id, [{ native, target }]);
     deckView(id);
     await fillAudio(added);
@@ -268,7 +252,7 @@ async function study(id) {
 }
 
 // ---------- shadowing ----------
-let podcast = null, session = null;
+let podcast = null, recording = null;
 
 function shadowView() {
   render(`<h1>Shadow</h1>
@@ -293,15 +277,15 @@ function shadowView() {
   });
   on('#rec', 'onclick', async e => {
     const btn = e.currentTarget;
-    if (session) {
+    if (recording) {
       btn.disabled = true;
-      const result = await session.stop();
-      session = null;
+      const result = await recording.stop();
+      recording = null;
       btn.textContent = '● Start shadowing'; btn.disabled = false;
       return analyse(result);
     }
     if (!podcast) throw Error('Load a podcast first');
-    session = await startSession($('#pod'));
+    recording = await startSession($('#pod'));
     btn.textContent = '■ Stop & analyse';
   });
 }
@@ -357,16 +341,7 @@ async function analyse({ blob, samples }) {
   const mine = (await transcribe({ blob })).filter(w => w.type === 'word').map(w => w.text).join(' ');
 
   say('Making cards with Claude…');
-  const added = await addCards('live', await claudeCards(
-`A ${s.native} speaker shadowed a ${s.target} podcast out loud and went silent (lost the speaker) during these sentences. They were auto-transcribed, so they may contain errors:
-${hard.join('\n')}
-
-Transcript of what the learner actually said during the whole session:
-${mine || '(nothing recognisable)'}
-
-Turn what they struggled with into spoken production flashcards, prioritising phrases missing or garbled in their transcript.
-Fix transcription errors, keep the speaker's natural phrasing, and split anything longer than ~14 words into shorter natural sentences.
-Skip filler and fragments with no learning value. "target" is the ${s.target} sentence, "native" a natural ${s.native} translation.`));
+  const added = await addCards('live', await cards('shadow', { hard: hard.join('\n'), mine }));
   say(`Added ${added.length} cards to Live:<br>${added.map(c => `${esc(c.back)} <small>${esc(c.front)}</small>`).join('<br>')}`);
   await fillAudio(added);
 }
@@ -378,13 +353,16 @@ function settingsView() {
   const s = S.settings;
   const field = (k, label, type = 'text', extra = '') => `<label>${label}<input name="${k}" type="${type}" value="${esc(s[k])}" ${extra}></label>`;
   render(`<h1>Settings</h1>
+    ${session
+      ? `<p>Signed in as ${esc(session.email)} <button id="signout">Sign out</button></p>`
+      : `<form id="signin"><label>Sign in to generate cards and audio
+          <input name="email" type="email" autocomplete="email" placeholder="you@example.com" required></label><button>Email me a code</button></form>
+        <form id="verify" hidden><input name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="Code from the email" required><button>Sign in</button></form>`}
     <form id="set">
       ${field('target', 'Target language')}
       ${field('native', 'Your language')}
       ${field('langCode', 'Target language code (ISO, e.g. es, fr, ja)')}
-      ${field('claudeKey', 'Claude API key', 'password', 'autocomplete="off"')}
-      ${field('elevenKey', 'ElevenLabs API key', 'password', 'autocomplete="off"')}
-      ${field('voiceId', 'ElevenLabs voice ID (pick a native speaker in the Voice Library)')}
+      ${field('voiceId', 'ElevenLabs voice ID (a native speaker from the Voice Library)')}
       ${field('gradStreak', 'Live → Global after this many correct in a row', 'number', 'min="1"')}
       ${field('gradIvl', '…or once the interval reaches (days)', 'number', 'min="1"')}
       ${field('newPerDay', 'New cards per deck per day', 'number', 'min="0"')}
@@ -392,7 +370,21 @@ function settingsView() {
       ${field('silenceRatio', 'Shadowing: silence sensitivity (0.05–0.5, higher = more gaps)', 'number', 'min="0.01" max="1" step="0.01"')}
     </form>
     <button id="export">Export backup</button> <label>Import backup <input type="file" id="import" accept=".json"></label>
-    <p class="hint">Backups include decks, progress and audio, but not your API keys.</p>`, 'settings');
+    <p class="hint">Backups include decks, progress and audio, but not your sign-in.</p>`, 'settings');
+  let email;
+  on('#signin', 'onsubmit', async e => {
+    e.preventDefault();
+    email = e.target.email.value.trim();
+    await auth('otp', { email, create_user: true });
+    $('#verify').hidden = false; $('#verify input').focus();
+    toast(`Code sent to ${email}`);
+  });
+  on('#verify', 'onsubmit', async e => {
+    e.preventDefault();
+    await setSession(await auth('verify', { type: 'email', email, token: e.target.code.value.trim() }));
+    settingsView();
+  });
+  on('#signout', 'onclick', async () => { await setSession(null); settingsView(); });
   on('#set', 'onchange', async e => {
     const f = e.target;
     s[f.name] = f.type === 'number' ? +f.value : f.value.trim();
@@ -402,9 +394,8 @@ function settingsView() {
     toast('Packing audio…', 60000);
     const audio = {};
     for (const id of await idb('audio', 'getAllKeys')) audio[id] = await blobToDataURL(await idb('audio', 'get', id));
-    const state = { ...S, settings: { ...s, claudeKey: '', elevenKey: '' } };
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([JSON.stringify({ state, audio })], { type: 'application/json' }));
+    a.href = URL.createObjectURL(new Blob([JSON.stringify({ state: S, audio })], { type: 'application/json' }));
     a.download = `echo-deck-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     toast('Exported');
@@ -413,7 +404,7 @@ function settingsView() {
     const { state, audio } = JSON.parse(await e.target.files[0].text());
     if (!confirm(`Replace everything with this backup (${state.cards.length} cards)?`)) return;
     for (const [id, url] of Object.entries(audio)) await idb('audio', 'put', await (await fetch(url)).blob(), id);
-    S = { ...state, settings: { ...DEFAULTS, ...state.settings, claudeKey: s.claudeKey, elevenKey: s.elevenKey } };
+    S = { ...state, settings: { ...DEFAULTS, ...state.settings } };
     await save(); toast('Imported'); decksView();
   });
 }

@@ -188,7 +188,9 @@ function deckView(id) {
     <ul class="cards">${cs.map(c => `<li><div>${esc(c.back)}<small>${esc(c.front)}</small></div>
       <small>${c.audio ? '🔊' : ''} ${c.reps ? (c.due > now ? fmtIvl(c.due - now) : 'due') : 'new'}</small>
       <button data-del="${c.id}" aria-label="Delete card">✕</button></li>`).join('')}</ul></details>
-    ${id === 'global' || id === 'live' ? '' : '<button id="deldeck" class="danger">Delete deck</button>'}`);
+    ${id === 'global' || id === 'live' ? '' : `<details><summary>Rename deck</summary>
+      <form id="rename"><input name="name" value="${esc(d.name)}" required><button>Save name</button></form></details>
+    <button id="deldeck" class="danger">Delete deck</button>`}`);
   on('.back', 'onclick', decksView);
   on('#study', 'onclick', () => study(id));
   on('#auto', 'onchange', async e => {
@@ -211,6 +213,11 @@ function deckView(id) {
     const cid = e.currentTarget.dataset.del;
     S.cards = S.cards.filter(c => c.id !== cid);
     await idb('audio', 'delete', cid); await save(); deckView(id);
+  });
+  on('#rename', 'onsubmit', async e => {
+    e.preventDefault();
+    d.name = e.target.name.value.trim() || d.name;
+    await save(); toast('Renamed', 1500); deckView(id);
   });
   on('#deldeck', 'onclick', async () => {
     if (!await ask(`Delete "${d.name}"${cs.length ? ` and its ${cs.length} cards` : ''}?`, 'Delete')) return;

@@ -58,6 +58,23 @@ async function cards(prompt: string) {
   return json(JSON.parse(text.text));
 }
 
+// Voice Library search. Voices that cost extra credits (a multiplier or custom rate) are left out.
+// ponytail: tts still accepts any voice ID; look the voice up there too if people send pricier ones directly.
+async function voices(b: Body) {
+  const q = new URLSearchParams({ page_size: '30', sort: 'usage_character_count_1y' });
+  for (const k of ['language', 'accent', 'gender', 'age', 'search', 'page']) if (b[k] != null && b[k] !== '') q.set(k, str(b[k], 100));
+  const r = await fetch(`https://api.elevenlabs.io/v1/shared-voices?${q}`, { headers: { 'xi-api-key': EL_KEY } });
+  if (!r.ok) return pass(r);
+  const { voices = [], has_more } = await r.json();
+  return json({
+    has_more,
+    voices: voices.filter((v: any) => (v.rate ?? 1) <= 1 && !v.fiat_rate).map((v: any) => ({
+      voice_id: v.voice_id, name: v.name, gender: v.gender, age: v.age, accent: v.accent, use_case: v.use_case,
+      description: v.description, preview_url: v.preview_url, verified_languages: v.verified_languages,
+    })),
+  });
+}
+
 // Stream ElevenLabs' response straight back (audio or JSON).
 const pass = (r: Response) =>
   new Response(r.body, { status: r.status, headers: { ...cors, 'content-type': r.headers.get('content-type') ?? 'application/octet-stream' } });
@@ -66,9 +83,11 @@ Deno.serve(async req => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: cors });
   try {
     const task = new URL(req.url).searchParams.get('task') ?? '';
-    if (!QUOTA[task]) return fail(400, 'Unknown task');
+    if (!QUOTA[task] && task !== 'voices') return fail(400, 'Unknown task');
     const { data: { user } } = await db.auth.getUser(req.headers.get('authorization')?.replace('Bearer ', '') ?? '');
     if (!user) return fail(401, 'Please sign in again');
+    // ponytail: searching voices spends no credits, so any signed-in user may; gate it on approval if it gets abused.
+    if (task === 'voices') return await voices(await req.json());
     const { data: ok, error } = await db.rpc('echo_use_quota', { p_uid: user.id, p_task: QUOTA[task] });
     if (error) throw error;
     if (ok === null) return fail(403, 'Your account is waiting for approval');

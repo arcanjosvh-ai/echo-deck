@@ -17,7 +17,7 @@ const idb = async (store, op, ...args) => {
 const SB = 'https://kcjopdfvhnxxxjdfvhys.supabase.co', ANON = 'sb_publishable_F3lo2ucp97M7Mu5pUzVWqA_ashimwPg'; // Lingo Land
 
 const DEFAULTS = {
-  target: 'Spanish', native: 'English', langCode: 'es', voiceId: 'JBFqnCBsd6RMkjVDRZzb',
+  target: 'Spanish', native: 'English', langCode: 'es', voice: null,
   gradStreak: 3, gradIvl: 21, newPerDay: 20, minGap: 1.5, silenceRatio: 0.2, theme: '',
 };
 const DECK = { auto: false, frontSec: 8, backSec: 10 };
@@ -25,7 +25,7 @@ let S = await idb('kv', 'get', 'state') || {
   decks: [{ id: 'global', name: 'Global', ...DECK }, { id: 'live', name: 'Live', ...DECK }], cards: [], settings: {},
 };
 S.settings = { ...DEFAULTS, ...S.settings };
-delete S.settings.claudeKey; delete S.settings.elevenKey; // keys from the pre-proxy version
+delete S.settings.claudeKey; delete S.settings.elevenKey; delete S.settings.voiceId; // from earlier versions
 const save = () => idb('kv', 'put', S, 'state');
 let session = await idb('kv', 'get', 'session'); // kept apart from S so backups never contain it
 navigator.storage?.persist?.();
@@ -107,7 +107,7 @@ async function api(task, body) {
 // task: translate {text} | shadow {hard, mine}
 const cards = async (task, params) =>
   (await (await api(task, { ...params, target: S.settings.target, native: S.settings.native })).json()).cards;
-const tts = async text => (await api('tts', { text, voiceId: S.settings.voiceId || DEFAULTS.voiceId })).blob();
+const tts = async (text, voiceId) => (await api('tts', { text, voiceId })).blob();
 
 // Scribe speech-to-text with word timestamps. Pass a blob/file, or a public audio URL.
 async function transcribe({ blob, url }) {
@@ -134,7 +134,7 @@ async function fillAudio(cards) {
   if (!cards.length) return;
   for (const [i, c] of cards.entries()) {
     toast(`Generating audio ${i + 1}/${cards.length}…`, 60000);
-    await idb('audio', 'put', await tts(c.back), c.id);
+    await idb('audio', 'put', await tts(c.back, voiceOf(deck(c.deckId)).id), c.id);
     c.audio = true;
     await save();
   }
@@ -178,6 +178,7 @@ function deckView(id) {
       <input name="back" placeholder="${esc(s.target)} sentence (blank = Claude translates)">
       <button>Add card</button>
     </form>
+    <p>Voice: <b>${esc(voiceOf(d).name)}</b>${d.voice ? '' : ' (default)'} <button id="voice">Change</button></p>
     ${missing ? `<button id="audio">Generate audio for ${missing} card${missing > 1 ? 's' : ''}</button>` : ''}
     <details id="list" ${listOpen ? 'open' : ''}><summary>Show cards (${cs.length})</summary>
     <ul class="cards">${cs.map(c => `<li><div>${esc(c.back)}<small>${esc(c.front)}</small></div>
@@ -200,6 +201,7 @@ function deckView(id) {
     await fillAudio(added);
     deckView(id);
   });
+  on('#voice', 'onclick', () => voiceView(d));
   on('#audio', 'onclick', async () => { await fillAudio(cs); deckView(id); });
   on('[data-del]', 'onclick', async e => {
     const cid = e.currentTarget.dataset.del;
@@ -293,6 +295,64 @@ document.addEventListener('click', () => {
   player.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
   player.play().catch(() => {});
 }, { once: true, capture: true });
+
+// ---------- voices (ElevenLabs Voice Library, searched through the proxy) ----------
+const GEORGE = { id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George' }; // ElevenLabs built-in voice
+const voiceOf = d => d?.voice ?? S.settings.voice ?? GEORGE; // deck's own, else the Settings default
+// Languages eleven_multilingual_v2 speaks; the browser supplies their names.
+const LANGS = 'en es fr de it pt pl nl sv da fi ro cs sk bg hr el tr ru uk ar hi ta id ms fil ja ko zh'.split(' ');
+const langName = new Intl.DisplayNames(['en'], { type: 'language' });
+
+// d = a deck, or nothing for the Settings default.
+function voiceView(d) {
+  const back = () => d ? deckView(d.id) : settingsView(), accents = new Set();
+  const opt = (v, label, sel) => `<option value="${v}" ${v === sel ? 'selected' : ''}>${label}</option>`;
+  let page = 0;
+  render(`<button class="back">‹ ${d ? esc(d.name) : 'Settings'}</button>
+    <h1>${d ? 'Deck voice' : 'Default voice'}</h1>
+    <p>Now: <b>${esc(voiceOf(d).name)}</b>${d?.voice ? ' <button id="usedefault">Use the default</button>' : ''}</p>
+    <form id="vf">
+      <label>Language <select name="language">${LANGS.map(c => opt(c, langName.of(c), S.settings.langCode)).join('')}</select></label>
+      <label>Accent / region <input name="accent" list="accents" placeholder="Any, e.g. argentine"></label>
+      <datalist id="accents"></datalist>
+      <label>Gender <select name="gender">${opt('', 'Any')}${opt('female', 'Female')}${opt('male', 'Male')}${opt('neutral', 'Neutral')}</select></label>
+      <label>Age <select name="age">${opt('', 'Any')}${opt('young', 'Young')}${opt('middle_aged', 'Middle aged')}${opt('old', 'Old')}</select></label>
+      <input name="search" type="search" placeholder="Search, e.g. calm, warm, narrator">
+      <button>Search</button>
+    </form>
+    <ul id="vres" class="cards"></ul>
+    <button id="more" hidden>More voices</button>`, d ? undefined : 'settings');
+  const search = async more => {
+    page = more ? page + 1 : 0;
+    const f = Object.fromEntries(new FormData($('#vf')));
+    $('#more').hidden = true;
+    const { voices, has_more } = await (await api('voices', { ...f, page })).json();
+    const rows = voices.map(v => {
+      const vl = v.verified_languages?.find(l => l.language === f.language); // accent + sample in this language
+      const accent = vl?.accent || v.accent;
+      if (accent) accents.add(accent);
+      return `<li><div><b>${esc(v.name)}</b><small>${esc([v.gender, v.age, accent, v.use_case].filter(Boolean).join(' · ').replace(/_/g, ' '))}</small>
+        <small>${esc((v.description ?? '').slice(0, 140))}</small></div>
+        ${vl?.preview_url || v.preview_url ? `<button data-play="${esc(vl?.preview_url || v.preview_url)}" aria-label="Play sample">▶</button>` : ''}
+        <button data-use="${esc(v.voice_id)}" data-name="${esc(v.name)}">Use</button></li>`;
+    }).join('');
+    $('#vres').innerHTML = (more ? $('#vres').innerHTML : '') + (rows || (more ? '' : '<li>No voices match. Try fewer filters.</li>'));
+    $('#accents').innerHTML = [...accents].map(a => `<option value="${esc(a)}">`).join('');
+    $('#more').hidden = !has_more;
+    on('[data-play]', 'onclick', e => { player.src = e.currentTarget.dataset.play; return player.play(); });
+    on('[data-use]', 'onclick', async e => {
+      const v = { id: e.currentTarget.dataset.use, name: e.currentTarget.dataset.name };
+      if (d) d.voice = v; else S.settings.voice = v;
+      await save(); toast(`Voice: ${v.name}`); back();
+    });
+  };
+  on('.back', 'onclick', back);
+  on('#usedefault', 'onclick', async () => { delete d.voice; await save(); back(); });
+  on('#vf', 'onsubmit', e => { e.preventDefault(); return search(); });
+  on('#vf', 'onchange', e => e.target.tagName === 'SELECT' && search());
+  on('#more', 'onclick', () => search(true));
+  run(search)();
+}
 
 async function study(id) {
   const d = deck(id), cs = cardsOf(id), now = Date.now();
@@ -443,13 +503,13 @@ function settingsView() {
   const field = (k, label, type = 'text', extra = '') => `<label>${label}<input name="${k}" type="${type}" value="${esc(s[k])}" ${extra}></label>`;
   render(`<h1>Settings</h1>
     <p>Signed in as ${esc(session.email)} <button id="signout">Sign out</button></p>
+    <p>Default voice: <b>${esc(voiceOf().name)}</b> <button id="voice">Change</button></p>
     <form id="set">
       <label>Appearance <select name="theme">${[['', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) =>
         `<option value="${v}" ${s.theme === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       ${field('target', 'Target language')}
       ${field('native', 'Your language')}
       ${field('langCode', 'Target language code (ISO, e.g. es, fr, ja)')}
-      ${field('voiceId', 'ElevenLabs voice ID (a native speaker from the Voice Library)')}
       ${field('gradStreak', 'Live → Global after this many correct in a row', 'number', 'min="1"')}
       ${field('gradIvl', '…or once the interval reaches (days)', 'number', 'min="1"')}
       ${field('newPerDay', 'New cards per deck per day', 'number', 'min="0"')}
@@ -459,6 +519,7 @@ function settingsView() {
     <button id="export">Export backup</button> <label>Import backup <input type="file" id="import" accept=".json"></label>
     <p class="hint">Backups include decks, progress and audio, but not your sign-in.</p>`, 'settings');
   on('#signout', 'onclick', signOut);
+  on('#voice', 'onclick', () => voiceView());
   on('#set', 'onchange', async e => {
     const f = e.target;
     s[f.name] = f.type === 'number' ? +f.value : f.value.trim();

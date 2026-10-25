@@ -100,8 +100,12 @@ async function api(task, body) {
     method: 'POST', body: form ? body : JSON.stringify(body),
     headers: { authorization: `Bearer ${await token()}`, apikey: ANON, ...(form ? {} : { 'content-type': 'application/json' }) },
   });
-  if (r.status === 401) signOut();
-  if (!r.ok) throw Error((await r.json().catch(() => ({}))).error || `Server error ${r.status}`);
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    // Only the proxy's own 401 ({error}) means the session is gone; ElevenLabs' 401s ({detail}) are passed through.
+    if (r.status === 401 && j.error) signOut();
+    throw Error(j.error || j.detail?.message || `Server error ${r.status}`);
+  }
   return r;
 }
 // task: translate {text} | shadow {hard, mine}

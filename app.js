@@ -51,7 +51,7 @@ function render(html, tab) {
 }
 const on = (sel, ev, fn) => document.querySelectorAll(sel).forEach(el => el[ev] = run(fn));
 
-// ---------- account (Supabase email code sign-in; a code, not a link, so it works inside the home-screen app) ----------
+// ---------- account (Supabase Google sign-in; `auth` is only used to refresh the session) ----------
 async function auth(path, body) {
   const r = await fetch(`${SB}/auth/v1/${path}`, { method: 'POST', headers: { apikey: ANON, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const j = await r.json().catch(() => ({}));
@@ -356,10 +356,7 @@ function settingsView() {
     ${session
       ? `<p>Signed in as ${esc(session.email)} <button id="signout">Sign out</button></p>`
       : `<p>Sign in to generate cards and audio</p>
-        <button id="google" class="primary">Continue with Google</button>
-        <form id="signin"><label>…or by email
-          <input name="email" type="email" autocomplete="email" placeholder="you@example.com" required></label><button>Email me a code</button></form>
-        <form id="verify" hidden><input name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="Code from the email" required><button>Sign in</button></form>`}
+        <button id="google" class="primary">Continue with Google</button>`}
     <form id="set">
       ${field('target', 'Target language')}
       ${field('native', 'Your language')}
@@ -375,19 +372,6 @@ function settingsView() {
     <p class="hint">Backups include decks, progress and audio, but not your sign-in.</p>`, 'settings');
   on('#google', 'onclick', () => {
     location.href = `${SB}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(location.origin + location.pathname)}`;
-  });
-  let email;
-  on('#signin', 'onsubmit', async e => {
-    e.preventDefault();
-    email = e.target.email.value.trim();
-    await auth('otp', { email, create_user: true });
-    $('#verify').hidden = false; $('#verify input').focus();
-    toast(`Code sent to ${email}`);
-  });
-  on('#verify', 'onsubmit', async e => {
-    e.preventDefault();
-    await setSession(await auth('verify', { type: 'email', email, token: e.target.code.value.trim() }));
-    settingsView();
   });
   on('#signout', 'onclick', async () => { await setSession(null); settingsView(); });
   on('#set', 'onchange', async e => {

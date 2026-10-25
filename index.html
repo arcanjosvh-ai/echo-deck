@@ -39,7 +39,14 @@
   @keyframes shrink { from { width: 100%; } to { width: 0; } }
   .timeup { color: var(--bad); font-weight: 600; }
   .grades { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-  .grades button { padding: 12px 4px; } .grades small { display: block; }
+  .grades button { padding: 12px 4px; color: #fff; border: 0; font-weight: 600; } .grades small { display: block; color: inherit; opacity: .8; }
+  .grades [data-g="0"] { background: #d33; }
+  .grades [data-g="1"] { background: #fff; color: #111; border: 1px solid #c8c8c8; }
+  .grades [data-g="2"] { background: #2e9d4f; }
+  .grades [data-g="3"] { background: #2a6df4; }
+  body.studying nav { display: none; }
+  body.studying #actions { position: fixed; left: 0; right: 0; bottom: 0; padding: 8px 16px calc(12px + env(safe-area-inset-bottom)); background: var(--bg); }
+  body.studying #toast { bottom: calc(96px + env(safe-area-inset-bottom)); }
   nav { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: var(--bg); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
   nav button { flex: 1; border: 0; background: none; border-radius: 0; padding: 14px; color: var(--mute); }
   nav button.on { color: var(--acc); font-weight: 600; }

@@ -46,6 +46,7 @@ const run = fn => async (...a) => { try { await fn(...a); } catch (e) { console.
 function render(html, tab) {
   clearTimeout(timer);
   $('nav').style.display = session ? '' : 'none';
+  document.body.classList.remove('studying'); // study() sets it: hides the tabs, pins its buttons to the bottom
   $('#view').innerHTML = html;
   if (tab) document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   scrollTo(0, 0);
@@ -322,6 +323,7 @@ async function study(id) {
       <div id="bar" class="bar"></div>
     </div>
     <div id="actions"><button id="show" class="primary">Show answer</button></div>`);
+  document.body.classList.add('studying');
   if (c.anki) ankiFrame($('#ak'), c.anki.q, d.css?.[c.anki.nt]);
   if (blob) { URL.revokeObjectURL(player.src); player.src = URL.createObjectURL(blob); }
   const countdown = (sec, fn) => {

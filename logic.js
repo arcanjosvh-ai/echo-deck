@@ -88,3 +88,60 @@ export function frictionSentences(words, windows, lead = 1.5) {
     .filter(s => spoken.some(([a, b]) => s.start < b && s.end > a - lead))
     .map(s => s.text.trim());
 }
+
+// ---------- Anki .apkg ----------
+// A zip of a SQLite collection, a media list, and media files named 0, 1, 2…
+// Anki 2.1.50+ exports (collection.anki21b) zstd-compress all three; older ones (anki21/anki2) don't.
+// sql(bytes) opens a SQLite file and returns q => rows as arrays; zstd(bytes) decompresses.
+// Returns notes as {fieldName: html} and audio(filename) => bytes | undefined.
+export async function readApkg(bytes, { sql, zstd }) {
+  const files = unzip(bytes), dec = b => new TextDecoder().decode(b);
+  const colName = ['collection.anki21b', 'collection.anki21', 'collection.anki2'].find(n => files[n]);
+  if (!colName) throw Error('Not an Anki deck (.apkg)');
+  const latest = colName.endsWith('b'), unpack = async n => latest ? zstd(await files[n]()) : files[n]();
+  const q = sql(await unpack(colName));
+  // Field names per note type: their own table since schema 18, JSON in col.models before that.
+  const types = {};
+  try { for (const [id, name] of q('select ntid, name from fields order by ntid, ord')) (types[id] ??= []).push(name); }
+  catch { for (const m of Object.values(JSON.parse(q('select models from col')[0][0]))) types[m.id] = m.flds.sort((a, b) => a.ord - b.ord).map(f => f.name); }
+  const notes = q('select mid, flds from notes order by id').map(([mid, flds]) =>
+    Object.fromEntries(flds.split('\x1f').map((v, i) => [types[mid]?.[i] ?? `Field ${i + 1}`, v])));
+  const media = {}; // filename -> zip entry
+  if (files.media) {
+    const raw = await unpack('media');
+    let i = 0; // latest: protobuf MediaEntries { repeated MediaEntry { string name = 1; … } = 1 }, entry i is zip file "i"
+    if (latest) pb(raw, (n, entry) => { if (n === 1) { const at = String(i++); pb(entry, (m, s) => { if (m === 1) media[dec(s)] = at; }); } });
+    else for (const [at, name] of Object.entries(JSON.parse(dec(raw)))) media[name] = at;
+  }
+  return { notes, audio: name => files[media[name]] && unpack(media[name]) };
+}
+
+// Zip entries as lazy readers, so a deck's media is only inflated when used.
+export function unzip(bytes) {
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), files = {};
+  let e = bytes.length - 22;
+  while (e > 0 && v.getUint32(e, true) !== 0x06054b50) e--;
+  if (e <= 0) throw Error('Not a zip file');
+  for (let p = v.getUint32(e + 16, true), n = v.getUint16(e + 10, true); n--; p += 46 + v.getUint16(p + 28, true) + v.getUint16(p + 30, true) + v.getUint16(p + 32, true)) {
+    const name = new TextDecoder().decode(bytes.subarray(p + 46, p + 46 + v.getUint16(p + 28, true)));
+    const at = v.getUint32(p + 42, true), start = at + 30 + v.getUint16(at + 26, true) + v.getUint16(at + 28, true);
+    const data = bytes.subarray(start, start + v.getUint32(p + 20, true)), method = v.getUint16(p + 10, true);
+    files[name] = async () => {
+      if (method === 0) return data;
+      if (method !== 8) throw Error(`Unsupported zip compression (${method})`);
+      return new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+    };
+  }
+  return files;
+}
+
+// Minimal protobuf walk: f(fieldNumber, bytes) for each length-delimited field, other wire types skipped.
+function pb(b, f) {
+  for (let p = 0; p < b.length;) {
+    const varint = () => { let x = 0, s = 1, c; do { c = b[p++]; x += (c & 127) * s; s *= 128; } while (c & 128); return x; };
+    const key = varint(), type = key & 7;
+    if (type === 2) { const len = varint(); f(key >> 3, b.subarray(p, p += len)); }
+    else if (type === 0) varint();
+    else p += type === 1 ? 8 : 4;
+  }
+}

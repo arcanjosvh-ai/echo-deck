@@ -1,4 +1,4 @@
-import { newCard, schedule, fmtIvl, shouldGraduate, nextCard, silentWindows, frictionSentences } from './logic.js';
+import { newCard, schedule, fmtIvl, shouldGraduate, nextCard, silentWindows, frictionSentences, readApkg } from './logic.js';
 
 // ---------- storage: one JSON state blob + audio blobs, both in IndexedDB ----------
 // ponytail: whole-state save on every change; move cards to their own object store past ~20k cards.
@@ -137,8 +137,10 @@ function decksView() {
       return `<button class="row" data-deck="${d.id}"><b>${esc(d.name)}</b>
         <span>${cs.filter(c => c.reps && c.due <= now).length} due · ${cs.filter(c => !c.reps).length} new · ${cs.length}</span></button>`;
     }).join('')}
-    <form id="newdeck"><input name="name" placeholder="New topic deck, e.g. Ordering food" required><button>Add deck</button></form>`, 'decks');
+    <form id="newdeck"><input name="name" placeholder="New topic deck, e.g. Ordering food" required><button>Add deck</button></form>
+    <label>…or import an Anki deck (.apkg) <input type="file" id="apkg"></label>`, 'decks');
   on('[data-deck]', 'onclick', e => deckView(e.currentTarget.dataset.deck));
+  on('#apkg', 'onchange', e => importView(e.target.files[0]));
   on('#newdeck', 'onsubmit', async e => {
     e.preventDefault();
     S.decks.push({ id: crypto.randomUUID(), name: e.target.name.value.trim(), ...DECK });
@@ -211,6 +213,64 @@ function deckView(id) {
     S.cards = S.cards.filter(c => c.deckId !== id);
     S.decks = S.decks.filter(x => x !== d);
     await save(); decksView();
+  });
+}
+
+// ---------- Anki import ----------
+// Loaded only when importing: sql.js reads the SQLite collection, fzstd unpacks Anki 2.1.50+ exports.
+// Pinned with SRI hashes because these scripts run alongside the sign-in session.
+const script = (src, integrity) => new Promise((onload, onerror) =>
+  document.head.append(Object.assign(document.createElement('script'), { src, integrity, crossOrigin: 'anonymous', onload, onerror })));
+async function ankiLibs() {
+  const SQLJS = 'https://cdn.jsdelivr.net/npm/sql.js@1.14.2/dist/';
+  if (!window.initSqlJs) await script(SQLJS + 'sql-wasm.js', 'sha384-7Zym2PlgXfg8ap8cqJUwlZrLl+VEwt0NVbzYfhH28IWLnSpAgQOnSCY2+EXo5MtM');
+  if (!window.fzstd) await script('https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.js', 'sha384-j11FJIL1HatEZOwEloCeZcNzDESMGs1ncTc2Kt0LgG0QpBU7lZHgyGU0Mif1OHeH');
+  const SQL = await initSqlJs({ locateFile: f => SQLJS + f });
+  return { sql: bytes => { const db = new SQL.Database(bytes); return q => db.exec(q)[0]?.values ?? []; }, zstd: b => fzstd.decompress(b) };
+}
+// Anki fields are HTML with [sound:file] tags. DOMParser documents are inert: no scripts run, nothing loads.
+const plain = html => new DOMParser().parseFromString(String(html ?? '').replace(/\[sound:[^\]]*\]/g, '').replace(/<br\s*\/?>|<\/?div>/gi, ' '), 'text/html')
+  .body.textContent.replace(/\s+/g, ' ').trim();
+const soundIn = html => html?.match(/\[sound:([^\]]+)\]/)?.[1];
+const MIME = { mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg', wav: 'audio/wav' };
+
+async function importView(file) {
+  toast('Reading deck…', 60000);
+  const { notes, audio } = await readApkg(new Uint8Array(await file.arrayBuffer()), await ankiLibs());
+  if (!notes.length) throw Error('That deck has no notes');
+  toast(`Found ${notes.length} notes`);
+  const fields = [...new Set(notes.flatMap(Object.keys))];
+  const sample = f => plain(notes.find(n => plain(n[f]))?.[f]).slice(0, 40);
+  const opts = sel => fields.map(f => `<option value="${esc(f)}" ${f === sel ? 'selected' : ''}>${esc(f)}: ${esc(sample(f))}</option>`).join('');
+  // Shared language decks usually put the target language first; Echo Deck prompts in your language.
+  render(`<button class="back">‹ Decks</button>
+    <h1>Import ${notes.length} notes</h1>
+    <form id="imp">
+      <label>Deck name <input name="name" value="${esc(file.name.replace(/\.apkg$/i, ''))}" required></label>
+      <label>Prompt, in ${esc(S.settings.native)} <select name="front">${opts(fields[1] ?? fields[0])}</select></label>
+      <label>Answer, in ${esc(S.settings.target)} <select name="back">${opts(fields[0])}</select></label>
+      <p class="hint">Audio comes from the answer field, or any other field with a sound. Cards start as new: Anki review history isn't imported.</p>
+      <button class="primary">Import</button>
+    </form>`, 'decks');
+  on('.back', 'onclick', decksView);
+  on('#imp', 'onsubmit', async e => {
+    e.preventDefault();
+    const f = e.target, d = { id: crypto.randomUUID(), name: f.name.value.trim(), ...DECK };
+    const rows = notes.map(n => ({ n, native: plain(n[f.front.value]), target: plain(n[f.back.value]) })).filter(r => r.native && r.target);
+    if (!rows.length) throw Error('Those fields are empty');
+    S.decks.push(d);
+    const added = await addCards(d.id, rows);
+    for (const [i, c] of added.entries()) {
+      const n = rows[i].n, name = soundIn(n[f.back.value]) ?? Object.values(n).map(soundIn).find(Boolean), bytes = name && await audio(name);
+      if (!bytes) continue;
+      if (i % 25 === 0) toast(`Importing audio ${i + 1}/${added.length}…`, 60000);
+      await idb('audio', 'put', new Blob([bytes], { type: MIME[name.split('.').pop().toLowerCase()] ?? '' }), c.id);
+      c.audio = true;
+    }
+    await save();
+    const skipped = notes.length - added.length;
+    toast(`Imported ${added.length} cards${skipped ? `, skipped ${skipped} with an empty prompt or answer` : ''}`, 4000);
+    deckView(d.id);
   });
 }
 

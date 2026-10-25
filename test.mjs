@@ -1,6 +1,10 @@
 // node test.mjs
 import assert from 'node:assert';
-import { newCard, schedule, shouldGraduate, nextCard, silentWindows, frictionSentences, MIN, DAY } from './logic.js';
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
+import { zstdDecompressSync } from 'node:zlib';
+import { newCard, schedule, shouldGraduate, nextCard, silentWindows, frictionSentences, readApkg, MIN, DAY } from './logic.js';
 
 // Learning: Good -> 10m, Good -> 1d, Good -> ~2.5d; Again resets streak.
 const c = newCard('live', 'Hello', 'Hola'), t = 0;
@@ -32,4 +36,18 @@ const W = (text, start, end) => ({ text, start, end, type: 'word' }), S = { text
 const words = [W('Uno.', 0, 1), S, W('Dos', 3.5, 4), S, W('tres.', 4, 5), S, W('Cuatro.', 7, 8)];
 assert.deepEqual(frictionSentences(words, win), ['Dos tres.']);
 assert.deepEqual(frictionSentences(words, [[10, 13]]), []);
+// Anki packages from Anki 25.09's own exporter, new (zstd) and legacy format, read with node's SQLite and zstd.
+const sql = bytes => {
+  const f = mkdtempSync(tmpdir() + '/apkg-') + '/c.db';
+  writeFileSync(f, bytes);
+  const db = new DatabaseSync(f);
+  return q => db.prepare(q).all().map(Object.values);
+};
+for (const kind of ['latest', 'legacy']) {
+  const { notes, audio } = await readApkg(readFileSync(new URL(`fixtures/${kind}.apkg`, import.meta.url)), { sql, zstd: zstdDecompressSync });
+  assert.deepEqual(notes.map(n => n.English ?? n.Back), ['Where is the station?', 'I am hungry.', 'Thank you'], kind);
+  assert.equal(notes[0].Audio, '[sound:donde.m4a]');
+  assert.equal((await audio('donde.m4a')).length, 11902, kind);
+  assert.equal(audio('missing.mp3'), undefined);
+}
 console.log('ok');

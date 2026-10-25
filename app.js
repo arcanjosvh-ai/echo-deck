@@ -18,7 +18,7 @@ const SB = 'https://kcjopdfvhnxxxjdfvhys.supabase.co', ANON = 'sb_publishable_F3
 
 const DEFAULTS = {
   target: 'Spanish', native: 'English', langCode: 'es', voiceId: 'JBFqnCBsd6RMkjVDRZzb',
-  gradStreak: 3, gradIvl: 21, newPerDay: 20, minGap: 1.5, silenceRatio: 0.2,
+  gradStreak: 3, gradIvl: 21, newPerDay: 20, minGap: 1.5, silenceRatio: 0.2, theme: '',
 };
 const DECK = { auto: false, frontSec: 8, backSec: 10 };
 let S = await idb('kv', 'get', 'state') || {
@@ -43,7 +43,11 @@ function toast(msg, ms = 3000) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = 'none', ms);
 }
 const run = fn => async (...a) => { try { await fn(...a); } catch (e) { console.error(e); toast(e.message, 6000); } };
+// Theme: '' follows the phone, or 'light' / 'dark' (index.html keys its colours off data-theme).
+const applyTheme = () => document.documentElement.dataset.theme = S.settings.theme;
+const isDark = () => S.settings.theme ? S.settings.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
 function render(html, tab) {
+  applyTheme();
   clearTimeout(timer);
   $('nav').style.display = session ? '' : 'none';
   document.body.classList.remove('studying'); // study() sets it: hides the tabs, pins its buttons to the bottom
@@ -232,11 +236,11 @@ const MIME = { mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg', wav: 'audi
 // Anki's reviewer: the deck's CSS styles only the card, nothing in a shared deck can run (no allow-scripts),
 // and the CSP stops it loading anything from the network.
 function ankiFrame(frame, html, css) {
-  const night = matchMedia('(prefers-color-scheme: dark)').matches ? 'nightMode night_mode' : '';
+  const night = isDark() ? 'nightMode night_mode' : '';
   frame.onload = () => { frame.style.height = Math.ceil(frame.contentDocument.documentElement.getBoundingClientRect().height) + 'px'; };
   frame.srcdoc = `<!doctype html><html class="${night}"><head><meta charset="utf-8">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
-    <style>:root { color-scheme: light dark; } body { margin: 0; font: 20px/1.4 -apple-system, system-ui, sans-serif; text-align: center; }</style>
+    <style>:root { color-scheme: ${isDark() ? 'dark' : 'light'}; } body { margin: 0; font: 20px/1.4 -apple-system, system-ui, sans-serif; text-align: center; }</style>
     <style>${css ?? ''}</style></head><body class="card ${night}">${html}</body></html>`;
 }
 
@@ -440,6 +444,8 @@ function settingsView() {
   render(`<h1>Settings</h1>
     <p>Signed in as ${esc(session.email)} <button id="signout">Sign out</button></p>
     <form id="set">
+      <label>Appearance <select name="theme">${[['', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) =>
+        `<option value="${v}" ${s.theme === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       ${field('target', 'Target language')}
       ${field('native', 'Your language')}
       ${field('langCode', 'Target language code (ISO, e.g. es, fr, ja)')}
@@ -456,6 +462,7 @@ function settingsView() {
   on('#set', 'onchange', async e => {
     const f = e.target;
     s[f.name] = f.type === 'number' ? +f.value : f.value.trim();
+    applyTheme();
     await save(); toast('Saved', 1000);
   });
   on('#export', 'onclick', async () => {

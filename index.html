@@ -10,7 +10,9 @@
 <title>Echo Deck</title>
 <style>
   :root { --bg: #fff; --fg: #111; --mute: #777; --line: #e3e3e3; --card: #f6f6f6; --acc: #2a6df4; --bad: #d33; color-scheme: light dark; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --mute: #999; --line: #2a2a2a; --card: #1c1c1c; --acc: #5b8dff; } }
+  :root[data-theme=light] { color-scheme: light; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme=light]) { --bg: #111; --fg: #eee; --mute: #999; --line: #2a2a2a; --card: #1c1c1c; --acc: #5b8dff; } }
+  :root[data-theme=dark] { color-scheme: dark; --bg: #111; --fg: #eee; --mute: #999; --line: #2a2a2a; --card: #1c1c1c; --acc: #5b8dff; }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.4 -apple-system, system-ui, sans-serif; padding: env(safe-area-inset-top) 16px calc(80px + env(safe-area-inset-bottom)); }
   h1 { font-size: 26px; margin: 16px 0 12px; }

@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { zstdDecompressSync } from 'node:zlib';
-import { newCard, schedule, shouldGraduate, nextCard, silentWindows, frictionSentences, readApkg, MIN, DAY } from './logic.js';
+import { newCard, schedule, shouldGraduate, nextCard, silentWindows, frictionSentences, readApkg, ankiCards, MIN, DAY } from './logic.js';
 
 // Learning: Good -> 10m, Good -> 1d, Good -> ~2.5d; Again resets streak.
 const c = newCard('live', 'Hello', 'Hola'), t = 0;
@@ -44,10 +44,19 @@ const sql = bytes => {
   return q => db.prepare(q).all().map(Object.values);
 };
 for (const kind of ['latest', 'legacy']) {
-  const { notes, audio } = await readApkg(readFileSync(new URL(`fixtures/${kind}.apkg`, import.meta.url)), { sql, zstd: zstdDecompressSync });
-  assert.deepEqual(notes.map(n => n.English ?? n.Back), ['Where is the station?', 'I am hungry.', 'Thank you'], kind);
-  assert.equal(notes[0].Audio, '[sound:donde.m4a]');
-  assert.equal((await audio('donde.m4a')).length, 11902, kind);
-  assert.equal(audio('missing.mp3'), undefined);
+  const pkg = await readApkg(readFileSync(new URL(`fixtures/${kind}.apkg`, import.meta.url)), { sql, zstd: zstdDecompressSync });
+  const cs = ankiCards(pkg), sentence = cs.find(c => c.kind === 'Sentence: Speak');
+  assert.equal(cs.length, 5, kind); // 2 sentences, 1 basic, 2 cloze deletions
+  assert.equal(sentence.q, 'Where is the station?<i>formal</i>', kind);
+  assert.equal(sentence.a, 'Where is the station?<i>formal</i><hr id=answer>¿Dónde está <span class="cue">la</span> estación?', kind);
+  assert.equal(sentence.say, '¿Dónde está <span class="cue">la</span> estación?'); // the field {{tts …:Spanish}} reads
+  assert.equal(sentence.sound, 'donde.m4a');
+  assert.equal(pkg.types[sentence.nt].css, '.cue { color: #2a7ae2; }', kind);
+  assert.equal(cs.find(c => c.q === 'I am hungry.')?.sound, undefined, kind); // empty {{#Notes}} section hidden
+  const [c1, c2] = cs.filter(c => c.kind.startsWith('Cloze'));
+  assert(c1.q.includes('<span class="cloze">[...]</span>, mundo') && c1.a.includes('<span class="cloze">Hola</span>'), kind);
+  assert(c2.q.includes('Hola, <span class="cloze">[world]</span>'), kind);
+  assert.equal((await pkg.audio('donde.m4a')).length, 11902, kind);
+  assert.equal(pkg.audio('missing.mp3'), undefined);
 }
 console.log('ok');

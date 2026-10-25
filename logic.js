@@ -93,19 +93,31 @@ export function frictionSentences(words, windows, lead = 1.5) {
 // A zip of a SQLite collection, a media list, and media files named 0, 1, 2…
 // Anki 2.1.50+ exports (collection.anki21b) zstd-compress all three; older ones (anki21/anki2) don't.
 // sql(bytes) opens a SQLite file and returns q => rows as arrays; zstd(bytes) decompresses.
-// Returns notes as {fieldName: html} and audio(filename) => bytes | undefined.
+// Returns note types {id: {name, css, tmpls: [{name, q, a}]}}, notes {id: {mid, fields: {name: html}}},
+// cards [{nid, ord}] and audio(filename) => bytes | undefined.
 export async function readApkg(bytes, { sql, zstd }) {
   const files = unzip(bytes), dec = b => new TextDecoder().decode(b);
   const colName = ['collection.anki21b', 'collection.anki21', 'collection.anki2'].find(n => files[n]);
   if (!colName) throw Error('Not an Anki deck (.apkg)');
   const latest = colName.endsWith('b'), unpack = async n => latest ? zstd(await files[n]()) : files[n]();
   const q = sql(await unpack(colName));
-  // Field names per note type: their own table since schema 18, JSON in col.models before that.
-  const types = {};
-  try { for (const [id, name] of q('select ntid, name from fields order by ntid, ord')) (types[id] ??= []).push(name); }
-  catch { for (const m of Object.values(JSON.parse(q('select models from col')[0][0]))) types[m.id] = m.flds.sort((a, b) => a.ord - b.ord).map(f => f.name); }
-  const notes = q('select mid, flds from notes order by id').map(([mid, flds]) =>
-    Object.fromEntries(flds.split('\x1f').map((v, i) => [types[mid]?.[i] ?? `Field ${i + 1}`, v])));
+  // Note types: their own tables with protobuf configs since schema 18, JSON in col.models before that.
+  // Schema 18 exports carry fields/templates of every stock type but only the note types in use, hence `?.`.
+  const types = {}, pbStr = (b, n) => { let s = ''; pb(b, (m, v) => { if (m === n) s = dec(v); }); return s; };
+  if (q("select 1 from sqlite_master where name = 'notetypes'").length) {
+    for (const [id, name, cfg] of q('select id, name, config from notetypes')) types[id] = { name, css: pbStr(cfg, 3), fields: [], tmpls: [] };
+    for (const [id, name] of q('select ntid, name from fields order by ntid, ord')) types[id]?.fields.push(name);
+    for (const [id, name, cfg] of q('select ntid, name, config from templates order by ntid, ord')) types[id]?.tmpls.push({ name, q: pbStr(cfg, 1), a: pbStr(cfg, 2) });
+  } else {
+    for (const m of Object.values(JSON.parse(q('select models from col')[0][0]))) types[m.id] = {
+      name: m.name, css: m.css, fields: m.flds.sort((a, b) => a.ord - b.ord).map(f => f.name),
+      tmpls: m.tmpls.sort((a, b) => a.ord - b.ord).map(t => ({ name: t.name, q: t.qfmt, a: t.afmt })),
+    };
+  }
+  const notes = {};
+  for (const [id, mid, flds] of q('select id, mid, flds from notes'))
+    notes[id] = { mid, fields: Object.fromEntries(flds.split('\x1f').map((v, i) => [types[mid]?.fields[i] ?? `Field ${i + 1}`, v])) };
+  const cards = q('select nid, ord from cards order by nid, ord').map(([nid, ord]) => ({ nid, ord }));
   const media = {}; // filename -> zip entry
   if (files.media) {
     const raw = await unpack('media');
@@ -113,7 +125,45 @@ export async function readApkg(bytes, { sql, zstd }) {
     if (latest) pb(raw, (n, entry) => { if (n === 1) { const at = String(i++); pb(entry, (m, s) => { if (m === 1) media[dec(s)] = at; }); } });
     else for (const [at, name] of Object.entries(JSON.parse(dec(raw)))) media[name] = at;
   }
-  return { notes, audio: name => files[media[name]] && unpack(media[name]) };
+  return { types, notes, cards, audio: name => files[media[name]] && unpack(media[name]) };
+}
+
+// Anki template -> HTML: {{Field}}, {{filter:Field}}, {{#Field}}…{{/Field}}, {{^Field}}…{{/Field}}, {{FrontSide}},
+// and cloze deletions for card `ord`. Anki's own TTS and type-the-answer tags render as nothing.
+export function renderCard(tmpl, fields, { ord = 0, back = false, front = '' } = {}) {
+  const empty = k => !String(fields[k] ?? '').replace(/<br\s*\/?>|<\/?div>|&nbsp;|\s/gi, '');
+  let s = tmpl, prev;
+  do { // innermost sections first, so nesting works
+    prev = s;
+    s = s.replace(/{{([#^])\s*([^}]+?)\s*}}((?:(?!{{[#^])[\s\S])*?){{\/\s*\2\s*}}/g, (_, op, k, body) => (op === '#') !== empty(k) ? body : '');
+  } while (s !== prev);
+  return s.replace(/{{\s*([^}]+?)\s*}}/g, (_, tag) => {
+    if (tag === 'FrontSide') return front;
+    const filters = tag.split(':'), k = filters.pop().trim();
+    if (filters.some(f => /^\s*(type|tts)\b/.test(f))) return '';
+    let v = fields[k] ?? '';
+    if (filters.some(f => f.trim() === 'cloze')) v = v.replace(/{{c(\d+)::([\s\S]*?)(?:::([\s\S]*?))?}}/g, (_, n, text, hint) =>
+      +n !== ord + 1 ? text : `<span class="cloze">${back ? text : `[${hint ?? '...'}]`}</span>`);
+    if (filters.some(f => f.trim() === 'text')) v = v.replace(/<[^>]*>/g, '');
+    return v;
+  });
+}
+
+// One Echo card per Anki card, laid out by its note type's templates like Anki's reviewer.
+// kind = "Note type: Card type"; say = what Echo's audio should speak: the field Anki's own {{tts …:Field}}
+// reads, else the answer side without the front. sound = an existing [sound:file] to use instead.
+export function ankiCards({ types, notes, cards }) {
+  const soundIn = h => h.match(/\[sound:([^\]]+)\]/)?.[1], unsound = h => h.replace(/\[sound:[^\]]*\]/g, '');
+  return cards.flatMap(({ nid, ord }) => {
+    const n = notes[nid], t = n && types[n.mid], tm = t && (t.tmpls[ord] ?? t.tmpls[0]); // cloze types have one template
+    if (!tm) return [];
+    const q = renderCard(tm.q, n.fields, { ord }), answer = renderCard(tm.a, n.fields, { ord, back: true });
+    const ttsField = tm.a.match(/{{\s*tts\b[^}]*:([^}:]+?)\s*}}/)?.[1];
+    return [{
+      kind: `${t.name}: ${tm.name}`, nt: n.mid, q: unsound(q), a: unsound(renderCard(tm.a, n.fields, { ord, back: true, front: q })),
+      say: unsound(ttsField ? n.fields[ttsField] ?? '' : answer), sound: soundIn(answer) ?? soundIn(q),
+    }];
+  });
 }
 
 // Zip entries as lazy readers, so a deck's media is only inflated when used.

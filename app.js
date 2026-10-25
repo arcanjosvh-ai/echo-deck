@@ -1,4 +1,4 @@
-import { newCard, schedule, fmtIvl, shouldGraduate, nextCard, silentWindows, frictionSentences, readApkg } from './logic.js';
+import { newCard, schedule, fmtIvl, shouldGraduate, nextCard, silentWindows, frictionSentences, readApkg, ankiCards } from './logic.js';
 
 // ---------- storage: one JSON state blob + audio blobs, both in IndexedDB ----------
 // ponytail: whole-state save on every change; move cards to their own object store past ~20k cards.
@@ -228,48 +228,62 @@ async function ankiLibs() {
   const SQL = await initSqlJs({ locateFile: f => SQLJS + f });
   return { sql: bytes => { const db = new SQL.Database(bytes); return q => db.exec(q)[0]?.values ?? []; }, zstd: b => fzstd.decompress(b) };
 }
-// Anki fields are HTML with [sound:file] tags. DOMParser documents are inert: no scripts run, nothing loads.
-const plain = html => new DOMParser().parseFromString(String(html ?? '').replace(/\[sound:[^\]]*\]/g, '').replace(/<br\s*\/?>|<\/?div>/gi, ' '), 'text/html')
+// Plain text of card HTML, for the card list and for what generated audio speaks. DOMParser documents are inert.
+const plain = html => new DOMParser().parseFromString(String(html ?? '').replace(/<br\s*\/?>|<\/?div>/gi, ' '), 'text/html')
   .body.textContent.replace(/\s+/g, ' ').trim();
-const soundIn = html => html?.match(/\[sound:([^\]]+)\]/)?.[1];
 const MIME = { mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg', wav: 'audio/wav' };
+
+// Imported cards keep their Anki layout and CSS (stored per deck by note type) and show in a sandboxed frame, as in
+// Anki's reviewer: the deck's CSS styles only the card, nothing in a shared deck can run (no allow-scripts),
+// and the CSP stops it loading anything from the network.
+function ankiFrame(frame, html, css) {
+  const night = matchMedia('(prefers-color-scheme: dark)').matches ? 'nightMode night_mode' : '';
+  frame.onload = () => { frame.style.height = Math.ceil(frame.contentDocument.documentElement.getBoundingClientRect().height) + 'px'; };
+  frame.srcdoc = `<!doctype html><html class="${night}"><head><meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+    <style>:root { color-scheme: light dark; } body { margin: 0; font: 20px/1.4 -apple-system, system-ui, sans-serif; text-align: center; }</style>
+    <style>${css ?? ''}</style></head><body class="card ${night}">${html}</body></html>`;
+}
 
 async function importView(file) {
   toast('Reading deck…', 60000);
-  const { notes, audio } = await readApkg(new Uint8Array(await file.arrayBuffer()), await ankiLibs());
-  if (!notes.length) throw Error('That deck has no notes');
-  toast(`Found ${notes.length} notes`);
-  const fields = [...new Set(notes.flatMap(Object.keys))];
-  const sample = f => plain(notes.find(n => plain(n[f]))?.[f]).slice(0, 40);
-  const opts = sel => fields.map(f => `<option value="${esc(f)}" ${f === sel ? 'selected' : ''}>${esc(f)}: ${esc(sample(f))}</option>`).join('');
-  // Shared language decks usually put the target language first; Echo Deck prompts in your language.
+  const pkg = await readApkg(new Uint8Array(await file.arrayBuffer()), await ankiLibs()), all = ankiCards(pkg);
+  if (!all.length) throw Error('That deck has no cards');
+  toast(`Found ${all.length} cards`);
+  const kinds = {};
+  for (const c of all) kinds[c.kind] = (kinds[c.kind] ?? 0) + 1;
+  const many = Object.keys(kinds).length > 1;
   render(`<button class="back">‹ Decks</button>
-    <h1>Import ${notes.length} notes</h1>
+    <h1>Import ${all.length} cards</h1>
     <form id="imp">
       <label>Deck name <input name="name" value="${esc(file.name.replace(/\.apkg$/i, ''))}" required></label>
-      <label>Prompt, in ${esc(S.settings.native)} <select name="front">${opts(fields[1] ?? fields[0])}</select></label>
-      <label>Answer, in ${esc(S.settings.target)} <select name="back">${opts(fields[0])}</select></label>
-      <p class="hint">Audio comes from the answer field, or any other field with a sound. Cards start as new: Anki review history isn't imported.</p>
+      ${many ? `<p>Card types to import:</p>${Object.entries(kinds).map(([k, n]) =>
+        `<label><input type="checkbox" name="kind" value="${esc(k)}" checked> ${esc(k)} (${n})</label>`).join('')}` : ''}
+      <p class="hint">Cards keep their Anki layout and colours, and start as new: Anki review history isn't imported.</p>
       <button class="primary">Import</button>
     </form>`, 'decks');
   on('.back', 'onclick', decksView);
   on('#imp', 'onsubmit', async e => {
     e.preventDefault();
-    const f = e.target, d = { id: crypto.randomUUID(), name: f.name.value.trim(), ...DECK };
-    const rows = notes.map(n => ({ n, native: plain(n[f.front.value]), target: plain(n[f.back.value]) })).filter(r => r.native && r.target);
-    if (!rows.length) throw Error('Those fields are empty');
+    const f = e.target, keep = new Set(new FormData(f).getAll('kind'));
+    const picked = all.filter(c => !many || keep.has(c.kind));
+    if (!picked.length) throw Error('Pick at least one card type');
+    const d = { id: crypto.randomUUID(), name: f.name.value.trim(), ...DECK, css: {} };
+    const added = picked.map(c => {
+      d.css[c.nt] = pkg.types[c.nt].css;
+      return { ...newCard(d.id, plain(c.q), plain(c.say)), anki: { q: c.q, a: c.a, nt: c.nt } };
+    });
     S.decks.push(d);
-    const added = await addCards(d.id, rows);
+    S.cards.push(...added);
     for (const [i, c] of added.entries()) {
-      const n = rows[i].n, name = soundIn(n[f.back.value]) ?? Object.values(n).map(soundIn).find(Boolean), bytes = name && await audio(name);
+      const name = picked[i].sound, bytes = name && await pkg.audio(name);
       if (!bytes) continue;
       if (i % 25 === 0) toast(`Importing audio ${i + 1}/${added.length}…`, 60000);
       await idb('audio', 'put', new Blob([bytes], { type: MIME[name.split('.').pop().toLowerCase()] ?? '' }), c.id);
       c.audio = true;
     }
     await save();
-    const skipped = notes.length - added.length;
-    toast(`Imported ${added.length} cards${skipped ? `, skipped ${skipped} with an empty prompt or answer` : ''}`, 4000);
+    toast(`Imported ${added.length} cards`);
     deckView(d.id);
   });
 }
@@ -292,12 +306,13 @@ async function study(id) {
   const blob = c.audio && await idb('audio', 'get', c.id); // load before reveal so play() runs inside the tap
   render(`<button class="back">‹ ${esc(d.name)}</button>
     <div class="card">
-      <p class="front">${esc(c.front)}</p>
-      <div id="ans" hidden><p class="target">${esc(c.back)}</p>${blob ? '<button id="replay">🔊 Replay</button>' : ''}</div>
+      ${c.anki ? '<iframe id="ak" sandbox="allow-same-origin" title="Card"></iframe>' : `<p class="front">${esc(c.front)}</p>`}
+      <div id="ans" hidden>${c.anki ? '' : `<p class="target">${esc(c.back)}</p>`}${blob ? '<button id="replay">🔊 Replay</button>' : ''}</div>
       <p id="timeup" class="timeup" hidden>⏰ Time's up. Say it out loud, then grade.</p>
       <div id="bar" class="bar"></div>
     </div>
     <div id="actions"><button id="show" class="primary">Show answer</button></div>`);
+  if (c.anki) ankiFrame($('#ak'), c.anki.q, d.css?.[c.anki.nt]);
   if (blob) { URL.revokeObjectURL(player.src); player.src = URL.createObjectURL(blob); }
   const countdown = (sec, fn) => {
     const bar = $('#bar');
@@ -307,6 +322,7 @@ async function study(id) {
   const playIt = () => { if (blob) { player.currentTime = 0; player.play().catch(() => {}); } };
   const reveal = () => {
     clearTimeout(timer);
+    if (c.anki) ankiFrame($('#ak'), c.anki.a, d.css?.[c.anki.nt]);
     $('#ans').hidden = false;
     playIt();
     $('#actions').innerHTML = `<div class="grades">${['Again', 'Hard', 'Good', 'Easy'].map((g, i) =>

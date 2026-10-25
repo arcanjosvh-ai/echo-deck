@@ -51,6 +51,14 @@ function render(html, tab) {
   scrollTo(0, 0);
 }
 const on = (sel, ev, fn) => document.querySelectorAll(sel).forEach(el => el[ev] = run(fn));
+// In-app confirm: some embedded browsers block native confirm() and silently answer Cancel.
+function ask(msg, yes) {
+  const d = document.createElement('dialog');
+  d.innerHTML = `<form method="dialog"><p>${esc(msg)}</p><button value="">Cancel</button> <button value="y" class="danger">${esc(yes)}</button></form>`;
+  document.body.append(d);
+  d.showModal();
+  return new Promise(res => d.onclose = () => { d.remove(); res(d.returnValue === 'y'); });
+}
 
 // ---------- account (Supabase Google sign-in; nothing else renders until signed in) ----------
 async function auth(path, body) {
@@ -208,7 +216,7 @@ function deckView(id) {
     await idb('audio', 'delete', cid); await save(); deckView(id);
   });
   on('#deldeck', 'onclick', async () => {
-    if (!confirm(`Delete "${d.name}" and its ${cs.length} cards?`)) return;
+    if (!await ask(`Delete "${d.name}"${cs.length ? ` and its ${cs.length} cards` : ''}?`, 'Delete')) return;
     for (const c of cs) await idb('audio', 'delete', c.id);
     S.cards = S.cards.filter(c => c.deckId !== id);
     S.decks = S.decks.filter(x => x !== d);
@@ -474,7 +482,7 @@ function settingsView() {
   });
   on('#import', 'onchange', async e => {
     const { state, audio } = JSON.parse(await e.target.files[0].text());
-    if (!confirm(`Replace everything with this backup (${state.cards.length} cards)?`)) return;
+    if (!await ask(`Replace everything with this backup (${state.cards.length} cards)?`, 'Replace')) return;
     for (const [id, url] of Object.entries(audio)) await idb('audio', 'put', await (await fetch(url)).blob(), id);
     S = { ...state, settings: { ...DEFAULTS, ...state.settings } };
     await save(); toast('Imported'); decksView();

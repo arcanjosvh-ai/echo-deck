@@ -45,6 +45,9 @@
   nav button.on { color: var(--acc); font-weight: 600; }
   #toast { position: fixed; left: 16px; right: 16px; bottom: calc(70px + env(safe-area-inset-bottom)); background: var(--fg); color: var(--bg); padding: 12px; border-radius: 10px; display: none; }
   audio { width: 100%; margin: 8px 0; }
+  dialog { background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 14px; max-width: min(360px, calc(100% - 32px)); }
+  dialog form { margin: 0; text-align: right; } dialog p { text-align: left; margin-top: 0; }
+  dialog::backdrop { background: #0008; }
   .login { min-height: 75vh; display: flex; flex-direction: column; justify-content: center; text-align: center; }
   .login h1 { font-size: 34px; }
 </style>

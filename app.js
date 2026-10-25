@@ -355,7 +355,9 @@ function settingsView() {
   render(`<h1>Settings</h1>
     ${session
       ? `<p>Signed in as ${esc(session.email)} <button id="signout">Sign out</button></p>`
-      : `<form id="signin"><label>Sign in to generate cards and audio
+      : `<p>Sign in to generate cards and audio</p>
+        <button id="google" class="primary">Continue with Google</button>
+        <form id="signin"><label>…or by email
           <input name="email" type="email" autocomplete="email" placeholder="you@example.com" required></label><button>Email me a code</button></form>
         <form id="verify" hidden><input name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="Code from the email" required><button>Sign in</button></form>`}
     <form id="set">
@@ -371,6 +373,9 @@ function settingsView() {
     </form>
     <button id="export">Export backup</button> <label>Import backup <input type="file" id="import" accept=".json"></label>
     <p class="hint">Backups include decks, progress and audio, but not your sign-in.</p>`, 'settings');
+  on('#google', 'onclick', () => {
+    location.href = `${SB}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(location.origin + location.pathname)}`;
+  });
   let email;
   on('#signin', 'onsubmit', async e => {
     e.preventDefault();
@@ -412,3 +417,17 @@ function settingsView() {
 const views = { decks: decksView, shadow: shadowView, settings: settingsView };
 on('nav button', 'onclick', e => views[e.currentTarget.dataset.tab]());
 decksView();
+
+// Google sign-in comes back here with tokens in the URL fragment. Implicit flow on purpose: PKCE would need a
+// verifier saved before the redirect, which is lost if iOS finishes it outside the home-screen app's storage.
+const back = new URLSearchParams(location.hash.slice(1));
+if (back.has('access_token') || back.has('error')) {
+  history.replaceState(null, '', location.pathname);
+  if (back.has('error')) toast(back.get('error_description') || back.get('error'), 6000);
+  else run(async () => {
+    const at = back.get('access_token');
+    const { email } = JSON.parse(atob(at.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    await setSession({ access_token: at, refresh_token: back.get('refresh_token'), expires_in: +back.get('expires_in'), user: { email } });
+    toast(`Signed in as ${email}`);
+  })();
+}

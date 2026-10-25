@@ -159,6 +159,7 @@ function decksView() {
 function deckView(id) {
   const d = deck(id), cs = cardsOf(id), now = Date.now(), s = S.settings;
   const missing = cs.filter(c => !c.audio).length;
+  const listOpen = $('#list')?.open; // stays open across re-renders after deleting/adding cards
   render(`<button class="back">‹ Decks</button>
     <h1>${esc(d.name)}</h1>
     <button id="study" class="primary">Study</button>
@@ -180,9 +181,10 @@ function deckView(id) {
       <button>Add card</button>
     </form>
     ${missing ? `<button id="audio">Generate audio for ${missing} card${missing > 1 ? 's' : ''}</button>` : ''}
+    <details id="list" ${listOpen ? 'open' : ''}><summary>Show cards (${cs.length})</summary>
     <ul class="cards">${cs.map(c => `<li><div>${esc(c.back)}<small>${esc(c.front)}</small></div>
       <small>${c.audio ? '🔊' : ''} ${c.reps ? (c.due > now ? fmtIvl(c.due - now) : 'due') : 'new'}</small>
-      <button data-del="${c.id}" aria-label="Delete card">✕</button></li>`).join('')}</ul>
+      <button data-del="${c.id}" aria-label="Delete card">✕</button></li>`).join('')}</ul></details>
     ${id === 'global' || id === 'live' ? '' : '<button id="deldeck" class="danger">Delete deck</button>'}`);
   on('.back', 'onclick', decksView);
   on('#study', 'onclick', () => study(id));

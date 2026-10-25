@@ -320,14 +320,14 @@ function voiceView(d) {
   const back = () => d ? deckView(d.id) : settingsView(), accents = new Set();
   const cs = d ? cardsOf(d.id) : S.cards, perCard = cs.length && cs.reduce((n, c) => n + Math.min(400, c.back.length), 0) / cs.length;
   const opt = (v, label, sel) => `<option value="${v}" ${v === sel ? 'selected' : ''}>${label}</option>`;
-  let page = 0;
+  let page = 0, lang;
   render(`<button class="back">‹ ${d ? esc(d.name) : 'Settings'}</button>
     <h1>${d ? 'Deck voice' : 'Default voice'}</h1>
     <p>Now: <b>${esc(voiceOf(d).name)}</b>${d?.voice ? ' <button id="usedefault">Use the default</button>' : ''}</p>
     <form id="vf">
       <label>Language <select name="language">${LANGS.map(c => opt(c, langName.of(c), S.settings.langCode)).join('')}</select></label>
-      <label>Accent / region <input name="accent" list="accents" placeholder="Any, e.g. argentine"></label>
-      <datalist id="accents"></datalist>
+      <label>Accent / region <input name="accent" placeholder="Any, e.g. argentine"></label>
+      <div id="accents" class="chips"></div>
       <label>Gender <select name="gender">${opt('', 'Any')}${opt('female', 'Female')}${opt('male', 'Male')}${opt('neutral', 'Neutral')}</select></label>
       <label>Age <select name="age">${opt('', 'Any')}${opt('young', 'Young')}${opt('middle_aged', 'Middle aged')}${opt('old', 'Old')}</select></label>
       <input name="search" type="search" placeholder="Search, e.g. calm, warm, narrator">
@@ -337,7 +337,10 @@ function voiceView(d) {
     <button id="more" hidden>More voices</button>`, d ? undefined : 'settings');
   const search = async more => {
     page = more ? page + 1 : 0;
-    const f = Object.fromEntries(new FormData($('#vf')));
+    const form = $('#vf');
+    // Accent suggestions are per language: start over when it changes.
+    if (form.elements.language.value !== lang) { lang = form.elements.language.value; accents.clear(); form.elements.accent.value = ''; }
+    const f = Object.fromEntries(new FormData(form));
     $('#more').hidden = true;
     const { voices, has_more } = await (await api('voices', { ...f, page })).json();
     const rows = voices.map(v => {
@@ -350,7 +353,10 @@ function voiceView(d) {
         <button data-use="${esc(v.voice_id)}" data-name="${esc(v.name)}">Use</button></li>`;
     }).join('');
     $('#vres').innerHTML = (more ? $('#vres').innerHTML : '') + (rows || (more ? '' : '<li>No voices match. Try fewer filters.</li>'));
-    $('#accents').innerHTML = [...accents].map(a => `<option value="${esc(a)}">`).join('');
+    // Tappable suggestions in the page (a <datalist> pop-up lands off-screen in some browsers).
+    $('#accents').innerHTML = ['', ...accents].map(a =>
+      `<button type="button" data-accent="${esc(a)}" class="${a === f.accent ? 'on' : ''}">${a ? esc(a) : 'Any'}</button>`).join('');
+    on('[data-accent]', 'onclick', e => { form.elements.accent.value = e.currentTarget.dataset.accent; return search(); });
     $('#more').hidden = !has_more;
     on('[data-play]', 'onclick', e => { player.src = e.currentTarget.dataset.play; return player.play(); });
     on('[data-use]', 'onclick', async e => {

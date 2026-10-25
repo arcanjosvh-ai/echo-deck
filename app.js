@@ -309,7 +309,8 @@ const langName = new Intl.DisplayNames(['en'], { type: 'language' });
 // Audio is made with eleven_multilingual_v2: 1 credit per character, times the voice's multiplier (rate).
 // fiat_rate is a legacy custom price the voice's owner charges. perCard = average length of the text voiced.
 function cost(v, perCard) {
-  if (v.fiat_rate) return `custom price: $${(+v.fiat_rate).toFixed(2)} per 1,000 credits`;
+  const usd = n => '$' + n.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  if (v.fiat_rate) return `custom price: ${usd(+v.fiat_rate)} per 1,000 credits${perCard ? ` · ≈${usd(v.fiat_rate * perCard / 1000)} per card` : ''}`;
   const r = v.rate ?? 1;
   return `${r} credit${r === 1 ? '' : 's'} per character${perCard ? ` · ≈${Math.round(r * perCard)} per card` : ''}`;
 }

@@ -447,16 +447,27 @@ function shadowView() {
     <button id="rec" class="primary">● Start shadowing</button>
     <div id="out"></div>`, 'shadow');
   if (podcast) $('#pod').src = podcast.src;
+  // Only a source that actually plays becomes the podcast to shadow.
+  const load = next => {
+    const pod = $('#pod');
+    pod.onloadedmetadata = () => {
+      podcast = next;
+      toast(`Loaded${isFinite(pod.duration) ? ` (${mmss(pod.duration)})` : ''}. Press Start shadowing when you're ready.`, 4000);
+    };
+    pod.onerror = () => toast("That didn't load as audio. Use the episode's direct audio link (usually an .mp3 in its RSS feed) or an audio file.", 7000);
+    pod.src = next.src;
+  };
   on('#purl', 'onsubmit', async e => {
     e.preventDefault();
     const url = e.target.url.value.trim();
-    podcast = { key: 'url:' + url, url, src: url };
-    $('#pod').src = url; S.lastPodcast = url; await save();
+    if (/(^|\.)spotify\.com$/.test(new URL(url).hostname))
+      throw Error("Spotify episodes only play inside Spotify's apps, so they can't load here. Use the episode's audio link from its RSS feed, or an audio file.");
+    load({ key: 'url:' + url, url, src: url });
+    S.lastPodcast = url; await save();
   });
   on('#pfile', 'onchange', e => {
     const file = e.target.files[0];
-    podcast = { key: `file:${file.name}:${file.size}`, file, src: URL.createObjectURL(file) };
-    $('#pod').src = podcast.src;
+    load({ key: `file:${file.name}:${file.size}`, file, src: URL.createObjectURL(file) });
   });
   on('#rec', 'onclick', async e => {
     const btn = e.currentTarget;

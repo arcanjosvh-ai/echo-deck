@@ -45,27 +45,39 @@ function toast(msg, ms = 3000) {
 const run = fn => async (...a) => { try { await fn(...a); } catch (e) { console.error(e); toast(e.message, 6000); } };
 function render(html, tab) {
   clearTimeout(timer);
+  $('nav').style.display = session ? '' : 'none';
   $('#view').innerHTML = html;
   if (tab) document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   scrollTo(0, 0);
 }
 const on = (sel, ev, fn) => document.querySelectorAll(sel).forEach(el => el[ev] = run(fn));
 
-// ---------- account (Supabase Google sign-in; `auth` is only used to refresh the session) ----------
+// ---------- account (Supabase Google sign-in; nothing else renders until signed in) ----------
 async function auth(path, body) {
   const r = await fetch(`${SB}/auth/v1/${path}`, { method: 'POST', headers: { apikey: ANON, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw Error(j.msg || j.error_description || j.message || `Sign-in failed (${r.status})`);
+  if (!r.ok) throw Object.assign(Error(j.msg || j.error_description || j.message || `Sign-in failed (${r.status})`), { status: r.status });
   return j;
 }
 async function setSession(j) {
   session = j && { access_token: j.access_token, refresh_token: j.refresh_token, email: j.user?.email ?? session?.email, expires: Date.now() + j.expires_in * 1000 };
   await idb('kv', 'put', session, 'session');
 }
+async function signOut() { await setSession(null); loginView(); }
 async function token() {
-  if (!session) throw Error('Sign in under Settings first');
-  if (session.expires < Date.now() + 60e3) await setSession(await auth('token?grant_type=refresh_token', { refresh_token: session.refresh_token }));
+  if (!session) throw Error('Please sign in');
+  // A rejected refresh token (4xx) means the session is gone; a network error or 5xx keeps it for a retry.
+  if (session.expires < Date.now() + 60e3) await setSession(await auth('token?grant_type=refresh_token', { refresh_token: session.refresh_token })
+    .catch(e => { if (e.status < 500) signOut(); throw e; }));
   return session.access_token;
+}
+function loginView() {
+  render(`<div class="login"><h1>Echo Deck</h1>
+    <p class="hint">Speak-first flashcards with native-speaker audio, plus shadowing practice that turns what you miss into new cards.</p>
+    <button id="google" class="primary">Continue with Google</button></div>`);
+  on('#google', 'onclick', () => {
+    location.href = `${SB}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(location.origin + location.pathname)}`;
+  });
 }
 
 // ---------- APIs, all through the `api` edge function ----------
@@ -75,6 +87,7 @@ async function api(task, body) {
     method: 'POST', body: form ? body : JSON.stringify(body),
     headers: { authorization: `Bearer ${await token()}`, apikey: ANON, ...(form ? {} : { 'content-type': 'application/json' }) },
   });
+  if (r.status === 401) signOut();
   if (!r.ok) throw Error((await r.json().catch(() => ({}))).error || `Server error ${r.status}`);
   return r;
 }
@@ -353,10 +366,7 @@ function settingsView() {
   const s = S.settings;
   const field = (k, label, type = 'text', extra = '') => `<label>${label}<input name="${k}" type="${type}" value="${esc(s[k])}" ${extra}></label>`;
   render(`<h1>Settings</h1>
-    ${session
-      ? `<p>Signed in as ${esc(session.email)} <button id="signout">Sign out</button></p>`
-      : `<p>Sign in to generate cards and audio</p>
-        <button id="google" class="primary">Continue with Google</button>`}
+    <p>Signed in as ${esc(session.email)} <button id="signout">Sign out</button></p>
     <form id="set">
       ${field('target', 'Target language')}
       ${field('native', 'Your language')}
@@ -370,10 +380,7 @@ function settingsView() {
     </form>
     <button id="export">Export backup</button> <label>Import backup <input type="file" id="import" accept=".json"></label>
     <p class="hint">Backups include decks, progress and audio, but not your sign-in.</p>`, 'settings');
-  on('#google', 'onclick', () => {
-    location.href = `${SB}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(location.origin + location.pathname)}`;
-  });
-  on('#signout', 'onclick', async () => { await setSession(null); settingsView(); });
+  on('#signout', 'onclick', signOut);
   on('#set', 'onchange', async e => {
     const f = e.target;
     s[f.name] = f.type === 'number' ? +f.value : f.value.trim();
@@ -400,7 +407,6 @@ function settingsView() {
 
 const views = { decks: decksView, shadow: shadowView, settings: settingsView };
 on('nav button', 'onclick', e => views[e.currentTarget.dataset.tab]());
-decksView();
 
 // Google sign-in comes back here with tokens in the URL fragment. Implicit flow on purpose: PKCE would need a
 // verifier saved before the redirect, which is lost if iOS finishes it outside the home-screen app's storage.
@@ -408,10 +414,11 @@ const back = new URLSearchParams(location.hash.slice(1));
 if (back.has('access_token') || back.has('error')) {
   history.replaceState(null, '', location.pathname);
   if (back.has('error')) toast(back.get('error_description') || back.get('error'), 6000);
-  else run(async () => {
+  else await run(async () => {
     const at = back.get('access_token');
     const { email } = JSON.parse(atob(at.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
     await setSession({ access_token: at, refresh_token: back.get('refresh_token'), expires_in: +back.get('expires_in'), user: { email } });
     toast(`Signed in as ${email}`);
   })();
 }
+session ? decksView() : loginView();

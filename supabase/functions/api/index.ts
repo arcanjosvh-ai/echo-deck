@@ -33,18 +33,6 @@ const CARDS_SCHEMA = {
 
 type Body = Record<string, unknown>;
 const PROMPTS: Record<string, (b: Body, t: string, n: string) => string> = {
-  generate: (b, t, n) => {
-    // ponytail: last 1000 sentences only, to bound prompt cost; dedupe client-side if repeats creep in.
-    const existing = (Array.isArray(b.existing) ? b.existing : []).slice(-1000).map(s => str(s, 200));
-    const topic = str(b.topic, 200);
-    return `You are building a spoken ${t} production flashcard deck for a ${n} speaker who learns to speak through sentences and spaced repetition, not grammar study.
-Write ${Math.min(100, Math.max(1, Number(b.n) || 20))} new ${t} sentences${topic ? ` on the topic: ${topic}` : ''}.
-- Build them from the most frequent ~1500 words of spoken ${t} (corpus frequency), favouring the most common first.
-- 4-12 words each, natural everyday speech a native would actually say. Vary tense, person, questions and negation without naming grammar.
-- "native" is a natural ${n} translation (the card prompt); "target" is the ${t} sentence.
-- Don't repeat any of these existing sentences:
-${existing.join('\n')}`;
-  },
   translate: (b, t, n) => `Translate into natural spoken ${t}, as one card. ${n}: ${str(b.text, 500)}`,
   shadow: (b, t, n) => `A ${n} speaker shadowed a ${t} podcast out loud and went silent (lost the speaker) during these sentences. They were auto-transcribed, so they may contain errors:
 ${str(b.hard, 8000)}
@@ -56,7 +44,7 @@ Turn what they struggled with into spoken production flashcards, prioritising ph
 Fix transcription errors, keep the speaker's natural phrasing, and split anything longer than ~14 words into shorter natural sentences.
 Skip filler and fragments with no learning value. "target" is the ${t} sentence, "native" a natural ${n} translation.`,
 };
-const QUOTA: Record<string, string> = { generate: 'cards', translate: 'cards', shadow: 'cards', tts: 'tts', stt: 'stt' };
+const QUOTA: Record<string, string> = { translate: 'cards', shadow: 'cards', tts: 'tts', stt: 'stt' };
 
 async function cards(prompt: string) {
   const msg = await claude.beta.messages.create({

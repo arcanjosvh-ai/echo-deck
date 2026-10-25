@@ -100,7 +100,7 @@ async function api(task, body) {
   if (!r.ok) throw Error((await r.json().catch(() => ({}))).error || `Server error ${r.status}`);
   return r;
 }
-// task: generate {n, topic, existing} | translate {text} | shadow {hard, mine}
+// task: translate {text} | shadow {hard, mine}
 const cards = async (task, params) =>
   (await (await api(task, { ...params, target: S.settings.target, native: S.settings.native })).json()).cards;
 const tts = async text => (await api('tts', { text, voiceId: S.settings.voiceId || DEFAULTS.voiceId })).blob();
@@ -169,13 +169,6 @@ function deckView(id) {
       <label>Front card seconds <input type="number" name="frontSec" min="1" value="${d.frontSec}"></label>
       <label>Back card seconds <input type="number" name="backSec" min="1" value="${d.backSec}"></label>
     </details>
-    <details><summary>Generate sentences with Claude</summary>
-      <form id="gen">
-        <label>How many <input type="number" name="n" min="1" max="200" value="50"></label>
-        <label>Topic <input name="topic" value="${id === 'global' || id === 'live' ? '' : esc(d.name)}" placeholder="blank = high-frequency everyday speech"></label>
-        <button>Generate</button>
-      </form>
-    </details>
     <form id="add">
       <input name="front" placeholder="${esc(s.native)} prompt" required>
       <input name="back" placeholder="${esc(s.target)} sentence (blank = Claude translates)">
@@ -193,15 +186,6 @@ function deckView(id) {
     const f = e.target;
     d[f.name] = f.type === 'checkbox' ? f.checked : Math.max(1, +f.value);
     await save();
-  });
-  on('#gen', 'onsubmit', async e => {
-    e.preventDefault();
-    toast('Asking Claude…', 60000);
-    const added = await addCards(id, await cards('generate', { n: +e.target.n.value, topic: e.target.topic.value.trim(), existing: S.cards.map(c => c.back) }));
-    toast(`Added ${added.length} cards`);
-    deckView(id);
-    await fillAudio(added);
-    deckView(id);
   });
   on('#add', 'onsubmit', async e => {
     e.preventDefault();

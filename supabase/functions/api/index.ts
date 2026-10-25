@@ -58,8 +58,9 @@ async function cards(prompt: string) {
   return json(JSON.parse(text.text));
 }
 
-// Voice Library search. Voices that cost extra credits (a multiplier or custom rate) are left out.
-// ponytail: tts still accepts any voice ID; look the voice up there too if people send pricier ones directly.
+// Voice Library search, with each voice's price: rate = credit multiplier (1 = standard),
+// fiat_rate = a legacy custom price in USD per 1,000 credits.
+// ponytail: daily limits count requests, not credits, so a 3x voice spends 3x per request; meter credits before charging users.
 async function voices(b: Body) {
   const q = new URLSearchParams({ page_size: '30', sort: 'usage_character_count_1y' });
   for (const k of ['language', 'accent', 'gender', 'age', 'search', 'page']) if (b[k] != null && b[k] !== '') q.set(k, str(b[k], 100));
@@ -68,9 +69,10 @@ async function voices(b: Body) {
   const { voices = [], has_more } = await r.json();
   return json({
     has_more,
-    voices: voices.filter((v: any) => (v.rate ?? 1) <= 1 && !v.fiat_rate).map((v: any) => ({
+    voices: voices.map((v: any) => ({
       voice_id: v.voice_id, name: v.name, gender: v.gender, age: v.age, accent: v.accent, use_case: v.use_case,
       description: v.description, preview_url: v.preview_url, verified_languages: v.verified_languages,
+      rate: v.rate ?? 1, fiat_rate: v.fiat_rate ?? null,
     })),
   });
 }

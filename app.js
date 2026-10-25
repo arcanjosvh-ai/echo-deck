@@ -306,10 +306,18 @@ const voiceOf = d => d?.voice ?? S.settings.voice ?? GEORGE; // deck's own, else
 // Languages eleven_multilingual_v2 speaks; the browser supplies their names.
 const LANGS = 'en es fr de it pt pl nl sv da fi ro cs sk bg hr el tr ru uk ar hi ta id ms fil ja ko zh'.split(' ');
 const langName = new Intl.DisplayNames(['en'], { type: 'language' });
+// Audio is made with eleven_multilingual_v2: 1 credit per character, times the voice's multiplier (rate).
+// fiat_rate is a legacy custom price the voice's owner charges. perCard = average length of the text voiced.
+function cost(v, perCard) {
+  if (v.fiat_rate) return `custom price: $${(+v.fiat_rate).toFixed(2)} per 1,000 credits`;
+  const r = v.rate ?? 1;
+  return `${r} credit${r === 1 ? '' : 's'} per character${perCard ? ` · ≈${Math.round(r * perCard)} per card` : ''}`;
+}
 
 // d = a deck, or nothing for the Settings default.
 function voiceView(d) {
   const back = () => d ? deckView(d.id) : settingsView(), accents = new Set();
+  const cs = d ? cardsOf(d.id) : S.cards, perCard = cs.length && cs.reduce((n, c) => n + Math.min(400, c.back.length), 0) / cs.length;
   const opt = (v, label, sel) => `<option value="${v}" ${v === sel ? 'selected' : ''}>${label}</option>`;
   let page = 0;
   render(`<button class="back">‹ ${d ? esc(d.name) : 'Settings'}</button>
@@ -335,7 +343,7 @@ function voiceView(d) {
       const vl = v.verified_languages?.find(l => l.language === f.language); // accent + sample in this language
       const accent = vl?.accent || v.accent;
       if (accent) accents.add(accent);
-      return `<li><div><b>${esc(v.name)}</b><small>${esc([v.gender, v.age, accent, v.use_case].filter(Boolean).join(' · ').replace(/_/g, ' '))}</small>
+      return `<li><div><b>${esc(v.name)}</b><small class="cost${(v.rate ?? 1) > 1 || v.fiat_rate ? ' pricey' : ''}">${esc(cost(v, perCard))}</small><small>${esc([v.gender, v.age, accent, v.use_case].filter(Boolean).join(' · ').replace(/_/g, ' '))}</small>
         <small>${esc((v.description ?? '').slice(0, 140))}</small></div>
         ${vl?.preview_url || v.preview_url ? `<button data-play="${esc(vl?.preview_url || v.preview_url)}" aria-label="Play sample">▶</button>` : ''}
         <button data-use="${esc(v.voice_id)}" data-name="${esc(v.name)}">Use</button></li>`;

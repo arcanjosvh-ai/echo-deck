@@ -18,7 +18,7 @@ const SB = 'https://kcjopdfvhnxxxjdfvhys.supabase.co', ANON = 'sb_publishable_F3
 
 const DEFAULTS = {
   target: 'Spanish', native: 'English', langCode: 'es', voice: null,
-  gradStreak: 3, gradIvl: 21, newPerDay: 20, minGap: 1.5, silenceRatio: 0.2, theme: '',
+  gradStreak: 3, gradIvl: 21, newPerDay: 20, minGap: 1.5, silenceRatio: 0.2, theme: '', rate: 1,
 };
 const DECK = { auto: false, frontSec: 8, backSec: 10 };
 let S = await idb('kv', 'get', 'state') || {
@@ -400,7 +400,8 @@ async function study(id) {
   render(`<button class="back">‹ ${esc(d.name)}</button>
     <div class="card">
       ${c.anki ? '<iframe id="ak" sandbox="allow-same-origin" title="Card"></iframe>' : `<p class="front">${esc(c.front)}</p>`}
-      <div id="ans" hidden>${c.anki ? '' : `<p class="target">${esc(c.back)}</p>`}${blob ? '<button id="replay">🔊 Replay</button>' : ''}</div>
+      <div id="ans" hidden>${c.anki ? '' : `<p class="target">${esc(c.back)}</p>`}${blob ? `<button id="replay">🔊 Replay</button>
+        <label class="speed">Speed <input id="rate" type="range" min="0.5" max="1.5" step="0.05" value="${S.settings.rate}"> <output>${S.settings.rate}×</output></label>` : ''}</div>
       <p id="timeup" class="timeup" hidden>⏰ Time's up. Say it out loud, then grade.</p>
       <div id="bar" class="bar"></div>
     </div>
@@ -413,7 +414,8 @@ async function study(id) {
     bar.style.animation = 'none'; bar.offsetWidth; bar.style.animation = `shrink ${sec}s linear forwards`;
     timer = setTimeout(fn, sec * 1000);
   };
-  const playIt = () => { if (blob) { player.currentTime = 0; player.play().catch(() => {}); } };
+  // playbackRate keeps the pitch (browsers default preservesPitch to true); a new src resets it to 1, so set it each play.
+  const playIt = () => { if (blob) { player.currentTime = 0; player.playbackRate = S.settings.rate; player.play().catch(() => {}); } };
   const reveal = () => {
     clearTimeout(timer);
     if (c.anki) ankiFrame($('#ak'), c.anki.a, d.css?.[c.anki.nt]);
@@ -422,6 +424,8 @@ async function study(id) {
     $('#actions').innerHTML = `<div class="grades">${['Again', 'Hard', 'Good', 'Easy'].map((g, i) =>
       `<button data-g="${i}">${g}<small>${fmtIvl(schedule({ ...c }, i, now).due - now)}</small></button>`).join('')}</div>`;
     on('#replay', 'onclick', playIt);
+    on('#rate', 'oninput', e => { S.settings.rate = +e.target.value; player.playbackRate = S.settings.rate; e.target.nextElementSibling.value = S.settings.rate + '×'; });
+    on('#rate', 'onchange', async () => { playIt(); await save(); }); // on release: hear the new speed
     on('[data-g]', 'onclick', async e => {
       schedule(c, +e.currentTarget.dataset.g);
       if (c.deckId === 'live' && shouldGraduate(c, S.settings)) { c.deckId = 'global'; toast('Graduated to Global ✓'); }
